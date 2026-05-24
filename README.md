@@ -104,3 +104,8 @@ ds2api-browser/
 ├── browser_config.example.json
 └── go.mod
 ```
+
+## 关联项目
+
+- **[deepseek-proxy](https://github.com/huanglong0719/deepseek-proxy)** - Python 协议转换代理，作为主入口路由图片请求到本服务（作为 git submodule 集成在 `vendor/ds2api-browser/`）
+- **[ds2api](https://github.com/huanglong0719/ds2api)** - 主项目，完整的 DeepSeek API 代理服务
