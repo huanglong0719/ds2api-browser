@@ -1,0 +1,5 @@
+*.exe
+*.exe~
+test_request.json
+browser_config.json
+.trae/
