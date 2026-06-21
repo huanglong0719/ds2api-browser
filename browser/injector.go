@@ -1,6 +1,6 @@
 package browser
 
-const injectScript = `
+const InjectScript = `
 (() => {
 if (window.__dsInjectDone) {
 	window.__dsBrowserCapture = '';
@@ -16,6 +16,18 @@ window.__dsBrowserPTypes = {};
 window.__dsBrowserSamples = {};
 window.__dsCurrentFragmentType = '';
 window.__dsInjectDone = true;
+window.__dsServerBusy = false;
+window.__dsConvLimitHit = false;
+
+function checkFlags() {
+	var all = (window.__dsBrowserCapture || '') + (window.__dsBrowserThinking || '');
+	if (all.indexOf('消息发送过于频繁') !== -1 || all.indexOf('发送过于频繁') !== -1 || all.indexOf('服务器繁忙') !== -1 || all.indexOf('服务繁忙') !== -1 || all.indexOf('请稍后重试') !== -1) {
+		window.__dsServerBusy = true;
+	}
+	if (all.indexOf('达到对话长度上限') !== -1 || all.indexOf('请开启新对话') !== -1 || all.indexOf('对话长度上限') !== -1) {
+		window.__dsConvLimitHit = true;
+	}
+}
 
 // Intercept fetch
 const origFetch = window.fetch;
@@ -24,10 +36,8 @@ window.fetch = async function(...args) {
 	const pathname = (() => { try { return new URL(url, location.href).pathname; } catch(e) { return url; } })();
 	window.__dsBrowserLog.push('f:' + pathname.substring(0,60));
 	if (window.__dsBrowserLog.length > 200) window.__dsBrowserLog.shift();
-
 	const resp = await origFetch.apply(this, args);
 	if (!resp) return resp;
-
 	const isChat = pathname.includes('/api/v0/');
 	if (isChat) {
 		window.__dsBrowserLog.push('MATCH_F:' + pathname.substring(0,60));
@@ -77,10 +87,12 @@ window.fetch = async function(...args) {
 						if (d.p === 'response/status' && d.v === 'FINISHED') {
 							window.__dsBrowserDone = true;
 							window.__dsBrowserLog.push('DONE_F:' + JSON.stringify(d).substring(0,50));
+							checkFlags();
 						}
 						if (d.p === 'response/status' && d.o === 'SET' && d.v === 'FINISHED') {
 							window.__dsBrowserDone = true;
 							window.__dsBrowserLog.push('DONE_F_SET');
+							checkFlags();
 						}
 					} catch(e) {
 						window.__dsBrowserLog.push('PE:' + line.substring(0,60));
@@ -100,14 +112,12 @@ window.XMLHttpRequest = function() {
 	const origOpen = xhr.open;
 	const origSend = xhr.send;
 	let xhrUrl = '';
-
 	xhr.open = function(method, url, ...rest) {
 		xhrUrl = (() => { try { return new URL(url, location.href).pathname; } catch(e) { return url; } })();
 		window.__dsBrowserLog.push('x:' + xhrUrl.substring(0,60));
 		if (window.__dsBrowserLog.length > 200) window.__dsBrowserLog.shift();
 		return origOpen.apply(this, [method, url, ...rest]);
 	};
-
 	xhr.send = function(...args) {
 		const self = this;
 		const origOnReady = self.onreadystatechange;
@@ -168,6 +178,7 @@ window.XMLHttpRequest = function() {
 							if (d.p === 'response/status' && d.v === 'FINISHED') {
 								window.__dsBrowserDone = true;
 								window.__dsBrowserLog.push('DONE_X');
+								checkFlags();
 							}
 							if (typeof d.v === 'string' && !d.p && !d.o && !d.content && !d.thinking) {
 								if (window.__dsCurrentFragmentType === 'THINK') {
@@ -217,7 +228,6 @@ window.XMLHttpRequest = function() {
 		};
 		return origSend.apply(this, args);
 	};
-
 	// Copy static properties
 	for (const key of Object.getOwnPropertyNames(OrigXHR)) {
 		if (key === 'prototype' || key === 'name' || key === 'length') continue;
@@ -283,6 +293,7 @@ if (OrigES) {
 					if (d.p === 'response/status' && d.v === 'FINISHED') {
 						window.__dsBrowserDone = true;
 						window.__dsBrowserLog.push('DONE_ES');
+						checkFlags();
 					}
 				} catch(e) {}
 			});

@@ -1,6 +1,7 @@
 {
   "port": 8766,
   "api_key": "sk-browser-proxy-key-2026",
+  "response_timeout_sec": 120,
   "accounts": [
     {
       "email": "your-phone-or-email",

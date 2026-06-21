@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"ds2api-browser/api"
 	"ds2api-browser/browser"
@@ -21,7 +23,7 @@ func main() {
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Printf("[main] config load warning: %v", err)
+		log.Fatalf("[main] config load failed: %v", err)
 	}
 	if len(cfg.Accounts) == 0 {
 		log.Println("[main] no accounts in config, add them via browser_config.json")
@@ -43,24 +45,41 @@ func main() {
 		}
 	}
 
-	chatHandler := browser.NewChatHandler(session)
+	chatHandler := browser.NewChatHandler(session, cfg.ResponseTimeoutSec)
 	apiHandler := api.NewHandler(cfg, chatHandler)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
-	server := &http.Server{Addr: addr, Handler: apiHandler.Router()}
+	server := &http.Server{
+		Addr:         addr,
+		Handler:      apiHandler.Router(),
+		ReadTimeout:  60 * time.Second,
+		WriteTimeout: 180 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
 
+	serverErr := make(chan error, 1)
 	go func() {
 		log.Printf("[main] listening on http://127.0.0.1%s", addr)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("[main] server error: %v", err)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
 		}
 	}()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+
+	select {
+	case err := <-serverErr:
+		log.Printf("[main] server error: %v", err)
+	case sig := <-sigCh:
+		log.Printf("[main] received signal: %v", sig)
+	}
 
 	log.Println("[main] shutting down...")
-	server.Shutdown(context.Background())
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("[main] server shutdown error: %v", err)
+	}
 	session.Close()
 }
