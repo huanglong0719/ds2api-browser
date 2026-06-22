@@ -192,8 +192,8 @@ func (h *Handler) handleDebug(w http.ResponseWriter, r *http.Request) {
 	var interceptorStr string
 	_ = browser.RunEval(h.chatHandler.Session().Context(),
 		`JSON.stringify({
-			capture: (window.__dsBrowserCapture || '').substring(0, 500),
-			thinking: (window.__dsBrowserThinking || '').substring(0, 500),
+			capture: (window.__dsBrowserCapture || '').substring(0, 2000),
+			thinking: (window.__dsBrowserThinking || '').substring(0, 2000),
 			done: window.__dsBrowserDone || false,
 			domDone: window.__dsBrowserDOMDone || false,
 			log: (window.__dsBrowserLog || []).slice(-30),

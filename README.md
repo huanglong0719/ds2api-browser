@@ -9,7 +9,7 @@
 - **连续对话** — 重用现有浏览器标签页，同一话题可连续多轮对话
 - **智能新对话检测** — 自动判断是否需要开启新对话（无 assistant 历史记录时）
 - **手动新对话控制** — 通过 `X-New-Conversation` 头或 `?new=true` 参数显式控制
-- **思考内容分离** — 解析 SSE 流中的 `THINK` 和 `RESPONSE` 片段，分别返回 `reasoning_content` 和 `content`
+- **深度思考分离** — 解析 SSE 流中的 `THINK` 和 `RESPONSE` 片段，分别返回 `reasoning_content` 和 `content`
 - **OpenAI 兼容接口** — 标准的 `/v1/chat/completions` 端点，支持第三方客户端直接连接
 - **流式/非流式响应** — 同时支持 `stream: true/false`
 - **并发安全** — 内置互斥锁保护，串行处理请求避免浏览器冲突
@@ -81,7 +81,7 @@ Invoke-RestMethod http://127.0.0.1:8766/healthz
 | `api_key` | string | - | 客户端认证密钥（Authorization: Bearer），为空则跳过认证 |
 | `response_timeout_sec` | int | 120 | 等待回复的超时时间（秒） |
 | `chrome_path` | string | 自动检测 | Chrome 浏览器可执行文件路径 |
-| `auto_new_conversation` | bool | false | 是否每次请求都强制开启新对话 |
+| `auto_new_conversation` | bool | false | 是否每次请求都强制开启新对话（true 忽略消息历史，强制新对话）|
 | `accounts` | array | - | DeepSeek 登录账号列表，支持多账号轮询切换 |
 
 ### 新对话行为
@@ -208,17 +208,23 @@ curl http://127.0.0.1:8766/v1/debug
 ```json
 {
   "interceptor": {
-    "capture": "...",
-    "thinking": "...",
-    "done": true,
-    "convLimit": false,
-    "serverBusy": false,
+    "capture": "...",          // 最终回复内容（前500字符）
+    "thinking": "...",         // 深度思考内容（前500字符）
+    "done": true,              // 拦截器完成标志
+    "domDone": true,           // DOM 观察器完成标志
+    "log": ["MATCH_F:...", "FRAG_TYPE:RESPONSE", "DONE_F"],  // 拦截日志（最近30条）
+    "ptypes": {"RESPONSE": 5, "THINK": 2},  // 片段类型统计
+    "convLimit": false,        // 是否检测到对话长度上限
+    "serverBusy": false,       // 是否检测到服务器繁忙
     "url": "https://chat.deepseek.com/..."
   },
   "page": {
-    "textareaExists": true,
-    "textareaDisabled": false,
-    "articleCount": 3
+    "textareaExists": true,    // 输入框是否存在
+    "textareaDisabled": false, // 输入框是否被禁用
+    "textareaValue": "...",    // 输入框内容（前100字符）
+    "articleCount": 3,         // Markdown 消息数量
+    "lastArticlePreview": "...", // 最后一条消息预览（前200字符）
+    "bodyText": "..."          // 页面 body 文本（前1000字符）
   }
 }
 ```
@@ -228,7 +234,7 @@ curl http://127.0.0.1:8766/v1/debug
 1. **标签页复用** — 不为每次请求创建新标签页，通过 CDP Target 跟踪重用现有标签页，实现连续对话。
 2. **智能模式切换** — 根据请求内容自动切换"默认模式"或"识图模式"，无需客户端关心底层细节。
 3. **三段式发送保障** — Enter 键 → JS 事件链点击 → MouseClickXY 坐标点击 → 键盘回车重试，确保消息在各种场景下都能成功发送。
-4. **SSE 双通道捕获** — 同时拦截网络层 EventSource 和 DOM 层 Markdown 变化，双重保障响应完整性。
+4. **SSE 三重拦截** — fetch + XHR + EventSource 三通道独立拦截，Go 层通过 `deduplicateContent()` 去重，三重保障响应完整性。
 5. **并发串行化** — 使用 sync.Mutex 保护 ChatHandler，同一时间只处理一个请求，避免浏览器操作冲突。
 6. **超时保护** — 请求级超时由 `response_timeout_sec` 配置（默认 120 秒），防止 Chrome 卡死导致 goroutine 永久阻塞。
 
@@ -253,7 +259,8 @@ curl http://127.0.0.1:8766/v1/debug
 │  │   ├── switchTo*Mode()   │ ← 模式切换
 │  │   ├── injectInterceptor()│ ← 注入 SSE 拦截器
 │  │   ├── sendMessage()      │ ← 清空→输入→Enter→重试
-│  │   └── waitForResponse()  │ ← 轮询 __dsBrowserCapture
+│  │   ├── waitForResponse()  │ ← 轮询 __dsBrowserCapture
+│  │   └── deduplicateContent()│ ← 三重拦截去重
 │  └── NewConversation()     │ ← UI 点击或 Ctrl+J
 └──────────┬──────────────────┘
            │ CDP 协议

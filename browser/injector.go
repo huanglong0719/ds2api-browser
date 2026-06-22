@@ -73,15 +73,13 @@ window.fetch = async function(...args) {
 							if (lastFrag && lastFrag.type) {
 								window.__dsCurrentFragmentType = lastFrag.type;
 							}
-						}
-						if (d.p && d.p.indexOf('response/fragments/') === 0 && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
+						} else if (d.p && d.p.indexOf('response/fragments/') === 0 && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
 							if (window.__dsCurrentFragmentType === 'THINK') {
 								window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + d.v;
 							} else {
 								window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
 							}
-						}
-						if (d.p === 'response/content' && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
+						} else if (d.p === 'response/content' && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
 							window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
 						}
 						if (d.p === 'response/status' && d.v === 'FINISHED') {
@@ -164,40 +162,29 @@ window.XMLHttpRequest = function() {
 									window.__dsCurrentFragmentType = lastFrag.type;
 									window.__dsBrowserLog.push('FRAG_TYPE:' + lastFrag.type);
 								}
-							}
-							if (d.p && d.p.indexOf('response/fragments/') === 0 && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
+							} else if (d.p && d.p.indexOf('response/fragments/') === 0 && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
 								if (window.__dsCurrentFragmentType === 'THINK') {
 									window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + d.v;
 								} else {
 									window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
 								}
-							}
-							if (d.p === 'response/content' && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
+							} else if (d.p === 'response/content' && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
 								window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
-							}
-							if (d.p === 'response/status' && d.v === 'FINISHED') {
-								window.__dsBrowserDone = true;
-								window.__dsBrowserLog.push('DONE_X');
-								checkFlags();
-							}
-							if (typeof d.v === 'string' && !d.p && !d.o && !d.content && !d.thinking) {
+							} else if (typeof d.v === 'string' && !d.p && !d.o && !d.content && !d.thinking) {
 								if (window.__dsCurrentFragmentType === 'THINK') {
 									window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + d.v;
 								} else {
 									window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
 								}
-							}
-							if (typeof d.content === 'string' && !d.p) {
+							} else if (typeof d.content === 'string' && !d.p) {
 								var nc = d.content.substring(lastDirectContentLen);
 								lastDirectContentLen = d.content.length;
 								if (nc) window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + nc;
-							}
-							if (typeof d.thinking === 'string' && !d.p) {
+							} else if (typeof d.thinking === 'string' && !d.p) {
 								var nt = d.thinking.substring(lastDirectThinkingLen);
 								lastDirectThinkingLen = d.thinking.length;
 								if (nt) window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + nt;
-							}
-							if (d.v && d.v.response) {
+							} else if (d.v && d.v.response) {
 								var r = d.v.response;
 								if (Array.isArray(r.fragments) && r.fragments.length > 0) {
 									var lastFrag = r.fragments[r.fragments.length - 1];
@@ -219,6 +206,11 @@ window.XMLHttpRequest = function() {
 								if (typeof r.delta === 'string' && r.delta) {
 									window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + r.delta;
 								}
+							}
+							if (d.p === 'response/status' && d.v === 'FINISHED') {
+								window.__dsBrowserDone = true;
+								window.__dsBrowserLog.push('DONE_X');
+								checkFlags();
 							}
 						} catch(e) {}
 					}
@@ -270,15 +262,13 @@ if (OrigES) {
 						if (lastFrag && lastFrag.type) {
 							window.__dsCurrentFragmentType = lastFrag.type;
 						}
-					}
-					if (d.p && d.p.indexOf('response/fragments/') === 0 && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
+					} else if (d.p && d.p.indexOf('response/fragments/') === 0 && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
 						if (window.__dsCurrentFragmentType === 'THINK') {
 							window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + d.v;
 						} else {
 							window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
 						}
-					}
-					if (d.v && d.v.response) {
+					} else if (d.v && d.v.response) {
 						var r = d.v.response;
 						if (Array.isArray(r.fragments) && r.fragments.length > 0) {
 							var lastFrag = r.fragments[r.fragments.length - 1];
@@ -286,8 +276,7 @@ if (OrigES) {
 								window.__dsCurrentFragmentType = lastFrag.type;
 							}
 						}
-					}
-					if (d.p === 'response/content' && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
+					} else if (d.p === 'response/content' && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
 						window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
 					}
 					if (d.p === 'response/status' && d.v === 'FINISHED') {

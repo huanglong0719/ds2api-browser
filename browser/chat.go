@@ -205,7 +205,7 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 		step("uploadImage")
 	}
 
-	if err := h.sendMessage(ctx, text); err != nil {
+	if err := h.sendMessage(text); err != nil {
 		return nil, fmt.Errorf("send message: %w", err)
 	}
 	step("sendMessage")
@@ -439,7 +439,7 @@ func (h *ChatHandler) uploadImage(filePath string) error {
 		return err
 	}
 	var uploaded bool
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		chromedp.Run(h.session.Context(),
 			chromedp.Evaluate(`(()=>{
 				const imgs = document.querySelectorAll('img[src*="blob:"], img[src*="data:"], [class*="preview"], [class*="thumbnail"], [class*="upload"]');
@@ -490,7 +490,7 @@ func (h *ChatHandler) injectInterceptor() error {
 	)
 }
 
-func (h *ChatHandler) sendMessage(ctx context.Context, text string) error {
+func (h *ChatHandler) sendMessage(text string) error {
 	log.Printf("[chat] preparing to type %d chars", len([]rune(text)))
 	if err := h.clearTextarea(); err != nil {
 		return fmt.Errorf("clear textarea: %w", err)
@@ -537,10 +537,7 @@ func (h *ChatHandler) typeText(text string) error {
 	runes := []rune(text)
 	totalRunes := len(runes)
 	for i := 0; i < totalRunes; i += maxTextChunk {
-		end := i + maxTextChunk
-		if end > totalRunes {
-			end = totalRunes
-		}
+		end := min(i+maxTextChunk, totalRunes)
 		chunk := string(runes[i:end])
 		// 使用 json.Marshal 安全编码，避免 XSS/注入风险
 		encodedChunk, err := json.Marshal(chunk)
@@ -576,7 +573,7 @@ func (h *ChatHandler) pressEnter() (bool, error) {
 	if err != nil {
 		log.Printf("[chat] Enter key: %v", err)
 	}
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		time.Sleep(100 * time.Millisecond)
 		var stillInBox bool
 		chromedp.Run(h.session.Context(),
@@ -674,7 +671,7 @@ func (h *ChatHandler) tryMouseClickXY(x, y int) bool {
 }
 
 func (h *ChatHandler) tryKeyboardEnterRetry() bool {
-	for attempt := 0; attempt < 3; attempt++ {
+	for range 3 {
 		chromedp.Run(h.session.Context(),
 			chromedp.Click("textarea", chromedp.ByQuery),
 			chromedp.Sleep(200*time.Millisecond),
@@ -829,11 +826,11 @@ func (h *ChatHandler) waitForResponse(ctx context.Context, timeout time.Duration
 }
 
 func deduplicateContent(content string) string {
-	if len(content) < 200 {
+	if content == "" {
 		return content
 	}
 	lines := strings.Split(content, "\n")
-	if len(lines) <= 2 {
+	if len(lines) <= 1 {
 		return content
 	}
 	deduped := lineLevelDedup(lines)
@@ -851,10 +848,9 @@ func lineLevelDedup(lines []string) []string {
 		if prev == curr {
 			continue
 		}
-		if len(curr) > 10 && len(prev) > 10 && strings.HasPrefix(prev, curr) {
-			continue
-		}
-		if len(curr) > 10 && len(prev) > 10 && strings.HasPrefix(curr, prev) {
+		// Only replace if curr is a strict superset of prev (curr starts with prev and is longer)
+		// This handles incremental SSE updates where a line grows over time
+		if len(curr) > len(prev) && len(prev) > 20 && strings.HasPrefix(curr, prev) {
 			result[len(result)-1] = curr
 			continue
 		}
@@ -990,7 +986,7 @@ func (h *ChatHandler) prepareForRetry(ctx context.Context, mode string, images [
 
 // detectImmediateError 消息发送后立即检测页面错误提示
 func (h *ChatHandler) detectImmediateError() (string, string) {
-	for i := 0; i < 15; i++ {
+	for range 15 {
 		var domText string
 		domErr := chromedp.Run(h.session.Context(),
 			chromedp.Evaluate(errorDetectJS, &domText),
@@ -1028,7 +1024,7 @@ func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, t
 		if err := h.prepareForRetry(ctx, mode, images); err != nil {
 			return &ChatResponse{Content: "切换账号后准备失败"}, err
 		}
-		if err := h.sendMessage(ctx, text); err != nil {
+		if err := h.sendMessage(text); err != nil {
 			return &ChatResponse{Content: "切换账号后重新发送失败"}, err
 		}
 
@@ -1078,7 +1074,7 @@ func (h *ChatHandler) retryWithNewConversation(ctx context.Context, mode string,
 	if err := h.prepareForRetry(ctx, mode, images); err != nil {
 		return &ChatResponse{Content: "新开对话后准备失败"}, err
 	}
-	if err := h.sendMessage(ctx, text); err != nil {
+	if err := h.sendMessage(text); err != nil {
 		return &ChatResponse{Content: "新开对话后重新发送失败"}, err
 	}
 	content, thinking, convLimit, serverBusy, err := h.waitForResponse(ctx, h.responseTimeout)
