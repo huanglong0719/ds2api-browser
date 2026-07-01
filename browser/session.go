@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"ds2api-browser/config"
@@ -29,6 +30,7 @@ type Session struct {
 	allocCancel       context.CancelFunc
 	browserCtx        context.Context
 	browserCancel     context.CancelFunc
+	ctxMu             sync.Mutex
 	loggedIn          bool
 	port              int
 	currentAccountIdx int    // 当前使用的账号索引
@@ -118,7 +120,57 @@ func (s *Session) initContexts() error {
 	// 强制设置浏览器窗口大小（覆盖 Chrome 记忆的上次窗口状态）
 	s.setWindowSize(900, 600)
 
+	// 关闭 Chrome session restore 自动恢复的多余 DeepSeek 标签页
+	// 根因：findDeepSeekTarget() 可能在 session restore 完成前执行，
+	// 导致创建新标签页的同时 session restore 又恢复出旧标签页
+	s.closeExtraDeepSeekTargets()
+
 	return nil
+}
+
+// closeExtraDeepSeekTargets 关闭多余的 DeepSeek 标签页（保留当前正在使用的）
+// 解决 Chrome session restore 自动恢复历史标签页导致出现多个 DeepSeek 页面的问题
+func (s *Session) closeExtraDeepSeekTargets() {
+	currentTargetID := target.ID("")
+	if s.browserCtx != nil {
+		if id := chromedp.FromContext(s.browserCtx); id != nil && id.Target != nil {
+			currentTargetID = id.Target.TargetID
+		}
+	}
+	if currentTargetID == "" {
+		return
+	}
+
+	infos, err := chromedp.Targets(s.allocCtx)
+	if err != nil {
+		log.Printf("[session] closeExtraTargets: list targets failed: %v (skip, non-critical)", err)
+		return
+	}
+
+	closed := 0
+	for _, info := range infos {
+		if info.Type != "page" {
+			continue
+		}
+		if !strings.Contains(info.URL, "chat.deepseek.com") {
+			continue
+		}
+		if info.TargetID == currentTargetID {
+			continue
+		}
+		err := chromedp.Run(s.allocCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			return target.CloseTarget(info.TargetID).Do(ctx)
+		}))
+		if err != nil {
+			log.Printf("[session] closeExtraTargets: close %s failed: %v", info.TargetID, err)
+		} else {
+			closed++
+			log.Printf("[session] closed extra DeepSeek target: %s (url=%s)", info.TargetID, info.URL)
+		}
+	}
+	if closed > 0 {
+		log.Printf("[session] closed %d extra DeepSeek tab(s)", closed)
+	}
 }
 
 func (s *Session) setWindowSize(width, height int) {
@@ -158,6 +210,9 @@ func (s *Session) setWindowSize(width, height int) {
 }
 
 func (s *Session) resetCtx() {
+	s.ctxMu.Lock()
+	defer s.ctxMu.Unlock()
+
 	if s.browserCancel != nil {
 		s.browserCancel()
 	}
@@ -185,11 +240,20 @@ func (s *Session) resetCtx() {
 }
 
 func (s *Session) Context() context.Context {
+	s.ctxMu.Lock()
 	if s.browserCtx != nil && s.browserCtx.Err() == nil {
-		return s.browserCtx
+		ctx := s.browserCtx
+		s.ctxMu.Unlock()
+		return ctx
 	}
+	s.ctxMu.Unlock()
+
 	s.resetCtx()
-	return s.browserCtx
+
+	s.ctxMu.Lock()
+	ctx := s.browserCtx
+	s.ctxMu.Unlock()
+	return ctx
 }
 
 func (s *Session) findDeepSeekTarget() target.ID {
@@ -244,7 +308,10 @@ func (s *Session) getBrowserWSURL() (string, error) {
 
 func (s *Session) clearProfileLocks(profileDir string) {
 	for _, f := range []string{"SingletonLock", "SingletonSocket", "SingletonCookie", "Lockfile"} {
-		os.Remove(filepath.Join(profileDir, f))
+		path := filepath.Join(profileDir, f)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			log.Printf("[session] clearProfileLocks: remove %s failed: %v", f, err)
+		}
 	}
 }
 
@@ -336,6 +403,9 @@ func (s *Session) Login(ctx context.Context, email, password string) error {
 	// 登录成功后确保窗口大小正确（覆盖 Chrome 记忆状态）
 	s.setWindowSize(900, 600)
 
+	// 检查并确保深度思考和智能搜索处于开启状态
+	s.checkToggleStates()
+
 	return nil
 }
 
@@ -345,9 +415,11 @@ func (s *Session) checkAndLogin(ctx context.Context, email, password string) err
 	}
 
 	var hasTextarea bool
-	_ = chromedp.Run(ctx,
+	if err := chromedp.Run(ctx,
 		chromedp.Evaluate(`document.querySelector("textarea") !== null`, &hasTextarea),
-	)
+	); err != nil {
+		log.Printf("[session] check textarea error: %v, assuming not logged in", err)
+	}
 
 	if hasTextarea {
 		log.Println("[session] already logged in")
@@ -382,7 +454,9 @@ func (s *Session) checkAndLogin(ctx context.Context, email, password string) err
 
 func (s *Session) ensureOnDeepSeek(ctx context.Context) error {
 	var url string
-	_ = chromedp.Run(ctx, chromedp.Evaluate(`window.location.href`, &url))
+	if err := chromedp.Run(ctx, chromedp.Evaluate(`window.location.href`, &url)); err != nil {
+		log.Printf("[session] get URL error: %v, will navigate anyway", err)
+	}
 	if strings.Contains(url, "chat.deepseek.com") {
 		return nil
 	}
@@ -581,48 +655,60 @@ func (s *Session) doLogin(ctx context.Context, email, password string) error {
 	log.Println("[session] cleared old input values")
 	time.Sleep(300 * time.Millisecond)
 
-	// 使用 insertText 模拟真实输入（React 表单需要真实的输入事件才能识别）
-	// 使用 json.Marshal 安全编码，避免 XSS/注入风险
-	fillEmail := `()=>{
+	// 使用 value setter 直接设置值（与 chat.go typeText 方式一致）
+	// DeepSeek 的 React 表单需要通过 prototype setter 才能触发状态更新
+	// 通过 placeholder 文字精确匹配输入框，防止填入错误位置
+	fillEmail := `(()=>{
 		var inputs = document.querySelectorAll('input');
+		var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
 		for (var i = 0; i < inputs.length; i++) {
 			var t = inputs[i].type || '';
 			var p = (inputs[i].placeholder || '').toLowerCase();
 			var autocomplete = (inputs[i].getAttribute('autocomplete') || '').toLowerCase();
-			if (t === 'email' || p.includes('邮箱') || p.includes('email') || p.includes('mail') ||
-				autocomplete.includes('email') || autocomplete.includes('username') || t === 'text') {
+			if (t === 'email' || p.includes('手机号') || p.includes('邮箱') || p.includes('email') || p.includes('mail') ||
+				autocomplete.includes('email') || autocomplete.includes('username')) {
 				inputs[i].focus();
-				inputs[i].select();
-				document.execCommand('insertText', false, window.__dsFillValue);
-				return;
+				setter.call(inputs[i], window.__dsFillValue);
+				inputs[i].dispatchEvent(new Event('input', {bubbles: true}));
+				inputs[i].dispatchEvent(new Event('change', {bubbles: true}));
+				return 'ok:' + (inputs[i].placeholder || '').substring(0, 30);
 			}
 		}
+		return 'not_found';
 	})()`
 	encodedEmail, _ := json.Marshal(email)
+	var emailResult string
 	chromedp.Run(ctx,
 		chromedp.Evaluate(fmt.Sprintf(`window.__dsFillValue=%s`, string(encodedEmail)), nil),
-		chromedp.Evaluate(fillEmail, nil),
+		chromedp.Evaluate(fillEmail, &emailResult),
 		chromedp.Evaluate(`delete window.__dsFillValue`, nil),
 	)
+	log.Printf("[session] email fill result: %s", emailResult)
 	time.Sleep(200 * time.Millisecond)
 
 	fillPass := `(()=>{
 		var inputs = document.querySelectorAll('input');
+		var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
 		for (var i = 0; i < inputs.length; i++) {
-			if (inputs[i].type === 'password') {
+			var p = (inputs[i].placeholder || '').toLowerCase();
+			if (inputs[i].type === 'password' || p.includes('密码')) {
 				inputs[i].focus();
-				inputs[i].select();
-				document.execCommand('insertText', false, window.__dsFillValue);
-				return;
+				setter.call(inputs[i], window.__dsFillValue);
+				inputs[i].dispatchEvent(new Event('input', {bubbles: true}));
+				inputs[i].dispatchEvent(new Event('change', {bubbles: true}));
+				return 'ok:' + (inputs[i].placeholder || '').substring(0, 30);
 			}
 		}
+		return 'not_found';
 	})()`
 	encodedPass, _ := json.Marshal(password)
+	var passResult string
 	chromedp.Run(ctx,
 		chromedp.Evaluate(fmt.Sprintf(`window.__dsFillValue=%s`, string(encodedPass)), nil),
-		chromedp.Evaluate(fillPass, nil),
+		chromedp.Evaluate(fillPass, &passResult),
 		chromedp.Evaluate(`delete window.__dsFillValue`, nil),
 	)
+	log.Printf("[session] password fill result: %s", passResult)
 
 	time.Sleep(200 * time.Millisecond)
 
@@ -758,7 +844,84 @@ func (s *Session) SwitchAccount() (string, error) {
 	s.loggedIn = true
 
 	log.Printf("[session] successfully switched to account %s", nextAccount.Email)
+
+	// 检查深度思考和智能搜索开关状态
+	s.checkToggleStates()
+
 	return nextAccount.Email, nil
+}
+
+// checkToggleStates 检查并确保"深度思考"和"智能搜索"处于开启状态
+// 登录后 DeepSeek 默认关闭深度思考，需要自动点击开启
+// DOM 特征：div.ds-toggle-button，aria-pressed="true" 表示开启，class 含 --selected 表示开启
+// 注意：DeepSeek 的 React 按钮对 JS .click() 无效，必须用 chromedp.MouseClickXY 真实点击
+func (s *Session) checkToggleStates() {
+	// 第一步：用 JS 检测状态和获取按钮坐标
+	var detectResult string
+	chromedp.Run(s.Context(), chromedp.Evaluate(`(()=>{
+		var info = {thinkingFound: false, thinkingOn: false, searchFound: false, searchOn: false, thinkingPos: null};
+
+		var toggles = document.querySelectorAll('div.ds-toggle-button, [aria-pressed]');
+		for (var i = 0; i < toggles.length; i++) {
+			var el = toggles[i];
+			var text = (el.textContent || '').trim();
+			var isOn = el.getAttribute('aria-pressed') === 'true' ||
+				el.className.includes('ds-toggle-button--selected');
+
+			if (text.includes('深度思考') && !info.thinkingFound) {
+				info.thinkingFound = true;
+				info.thinkingOn = isOn;
+				var r = el.getBoundingClientRect();
+				info.thinkingDetail = {
+					ariaPressed: el.getAttribute('aria-pressed'),
+					hasSelectedClass: el.className.includes('ds-toggle-button--selected'),
+				};
+				if (r.width > 0 && r.height > 0) {
+					info.thinkingPos = {x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2)};
+				}
+			}
+
+			if (text.includes('智能搜索') && !info.searchFound) {
+				info.searchFound = true;
+				info.searchOn = isOn;
+				info.searchDetail = {
+					ariaPressed: el.getAttribute('aria-pressed'),
+					hasSelectedClass: el.className.includes('ds-toggle-button--selected'),
+				};
+			}
+		}
+		return JSON.stringify(info);
+	})()`, &detectResult))
+	log.Printf("[session] toggle states: %s", detectResult)
+
+	// 第二步：如果深度思考未开启，用真实鼠标点击
+	if strings.Contains(detectResult, `"thinkingOn":false`) && strings.Contains(detectResult, `"thinkingPos":`) {
+		var pos struct {
+			ThinkingPos *struct {
+				X int `json:"x"`
+				Y int `json:"y"`
+			} `json:"thinkingPos"`
+		}
+		json.Unmarshal([]byte(detectResult), &pos)
+		if pos.ThinkingPos != nil {
+			log.Printf("[session] clicking 深度思考 toggle at (%d,%d)", pos.ThinkingPos.X, pos.ThinkingPos.Y)
+			chromedp.Run(s.Context(), chromedp.MouseClickXY(float64(pos.ThinkingPos.X), float64(pos.ThinkingPos.Y)))
+			time.Sleep(500 * time.Millisecond)
+
+			// 验证点击后是否已开启
+			var verify string
+			chromedp.Run(s.Context(), chromedp.Evaluate(`(()=>{
+				var els = document.querySelectorAll('div.ds-toggle-button[aria-pressed], div.ds-toggle-button');
+				for (var i = 0; i < els.length; i++) {
+					if ((els[i].textContent||'').trim().includes('深度思考')) {
+						return JSON.stringify({on: els[i].getAttribute('aria-pressed') === 'true' || els[i].className.includes('--selected')});
+					}
+				}
+				return JSON.stringify({on: false, error: 'not_found'});
+			})()`, &verify))
+			log.Printf("[session] 深度思考 after click: %s", verify)
+		}
+	}
 }
 
 // logout 登出当前账号

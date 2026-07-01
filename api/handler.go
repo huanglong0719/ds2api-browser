@@ -190,7 +190,7 @@ func (h *Handler) handleDebug(w http.ResponseWriter, r *http.Request) {
 
 	// 查询浏览器中的拦截器状态
 	var interceptorStr string
-	_ = browser.RunEval(h.chatHandler.Session().Context(),
+	if err := browser.RunEval(h.chatHandler.Session().Context(),
 		`JSON.stringify({
 			capture: (window.__dsBrowserCapture || '').substring(0, 2000),
 			thinking: (window.__dsBrowserThinking || '').substring(0, 2000),
@@ -201,11 +201,14 @@ func (h *Handler) handleDebug(w http.ResponseWriter, r *http.Request) {
 			convLimit: window.__dsConvLimitHit || false,
 			serverBusy: window.__dsServerBusy || false,
 			url: window.location.href
-		})`, &interceptorStr)
+		})`, &interceptorStr); err != nil {
+		log.Printf("[api] debug interceptor eval error: %v", err)
+		interceptorStr = "{}"
+	}
 
 	// 获取页面 DOM 文本的摘要
 	var pageStr string
-	_ = browser.RunEval(h.chatHandler.Session().Context(),
+	if err := browser.RunEval(h.chatHandler.Session().Context(),
 		`(()=>{
 			const ta = document.querySelector('textarea');
 			const articles = document.querySelectorAll('[class*="ds-markdown"]');
@@ -218,7 +221,10 @@ func (h *Handler) handleDebug(w http.ResponseWriter, r *http.Request) {
 				lastArticlePreview: lastArticle,
 				bodyText: (document.body && document.body.textContent || '').substring(0, 1000)
 			});
-		})()`, &pageStr)
+		})()`, &pageStr); err != nil {
+		log.Printf("[api] debug page eval error: %v", err)
+		pageStr = "{}"
+	}
 
 	json.NewEncoder(w).Encode(map[string]json.RawMessage{
 		"interceptor": json.RawMessage(interceptorStr),
@@ -283,15 +289,6 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[api] continuous chat (reusing existing conversation, msgs=%d)", len(req.Messages))
 	}
 
-	if shouldNewConv {
-		log.Println("[api] starting new conversation")
-		t0 := time.Now()
-		if err := h.chatHandler.NewConversation(ctx); err != nil {
-			log.Printf("[api] new conversation failed: %v", err)
-		}
-		log.Printf("[api⏱] NewConversation: %dms", time.Since(t0)/time.Millisecond)
-	}
-
 	var resp *browser.ChatResponse
 	var err error
 
@@ -300,9 +297,9 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 		resp, err = h.chatHandler.SendImageChat(ctx, &browser.ChatRequest{
 			Text:   text,
 			Images: images,
-		})
+		}, shouldNewConv)
 	} else {
-		resp, err = h.chatHandler.SendTextChat(ctx, text)
+		resp, err = h.chatHandler.SendTextChat(ctx, text, shouldNewConv)
 	}
 	log.Printf("[api⏱] SendChat: %dms", time.Since(t0)/time.Millisecond)
 

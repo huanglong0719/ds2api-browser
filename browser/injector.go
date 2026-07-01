@@ -74,7 +74,7 @@ window.fetch = async function(...args) {
 								window.__dsCurrentFragmentType = lastFrag.type;
 							}
 						} else if (d.p && d.p.indexOf('response/fragments/') === 0 && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
-							if (window.__dsCurrentFragmentType === 'THINK') {
+							if (window.__dsCurrentFragmentType === 'THINK' || window.__dsCurrentFragmentType === 'THINKING') {
 								window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + d.v;
 							} else {
 								window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
@@ -163,7 +163,7 @@ window.XMLHttpRequest = function() {
 									window.__dsBrowserLog.push('FRAG_TYPE:' + lastFrag.type);
 								}
 							} else if (d.p && d.p.indexOf('response/fragments/') === 0 && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
-								if (window.__dsCurrentFragmentType === 'THINK') {
+								if (window.__dsCurrentFragmentType === 'THINK' || window.__dsCurrentFragmentType === 'THINKING') {
 									window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + d.v;
 								} else {
 									window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
@@ -171,7 +171,7 @@ window.XMLHttpRequest = function() {
 							} else if (d.p === 'response/content' && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
 								window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
 							} else if (typeof d.v === 'string' && !d.p && !d.o && !d.content && !d.thinking) {
-								if (window.__dsCurrentFragmentType === 'THINK') {
+								if (window.__dsCurrentFragmentType === 'THINK' || window.__dsCurrentFragmentType === 'THINKING') {
 									window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + d.v;
 								} else {
 									window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
@@ -263,7 +263,7 @@ if (OrigES) {
 							window.__dsCurrentFragmentType = lastFrag.type;
 						}
 					} else if (d.p && d.p.indexOf('response/fragments/') === 0 && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
-						if (window.__dsCurrentFragmentType === 'THINK') {
+						if (window.__dsCurrentFragmentType === 'THINK' || window.__dsCurrentFragmentType === 'THINKING') {
 							window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + d.v;
 						} else {
 							window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;

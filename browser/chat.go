@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chromedp/chromedp"
@@ -131,7 +132,7 @@ type ChatHandler struct {
 	session         *Session
 	mu              sync.Mutex
 	responseTimeout time.Duration
-	lastActivity    time.Time
+	lastActivity    atomic.Int64
 }
 
 type ChatRequest struct {
@@ -158,21 +159,21 @@ func (h *ChatHandler) Session() *Session {
 	return h.session
 }
 
-func (h *ChatHandler) SendTextChat(ctx context.Context, text string) (*ChatResponse, error) {
+func (h *ChatHandler) SendTextChat(ctx context.Context, text string, shouldNewConv bool) (*ChatResponse, error) {
 	if text == "" {
 		return nil, fmt.Errorf("empty text message")
 	}
-	return h.sendChat(ctx, "text", text, nil)
+	return h.sendChat(ctx, "text", text, nil, shouldNewConv)
 }
 
-func (h *ChatHandler) SendImageChat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
+func (h *ChatHandler) SendImageChat(ctx context.Context, req *ChatRequest, shouldNewConv bool) (*ChatResponse, error) {
 	if len(req.Images) == 0 {
 		return nil, fmt.Errorf("no images provided for image chat")
 	}
-	return h.sendChat(ctx, "image", req.Text, req.Images)
+	return h.sendChat(ctx, "image", req.Text, req.Images, shouldNewConv)
 }
 
-func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, images []string) (*ChatResponse, error) {
+func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, images []string, shouldNewConv bool) (*ChatResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -181,6 +182,14 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 	step := func(name string) {
 		log.Printf("[chat⏱] %s: +%dms (total %dms)", name, time.Since(t0)/time.Millisecond, time.Since(startTime)/time.Millisecond)
 		t0 = time.Now()
+	}
+
+	if shouldNewConv {
+		log.Println("[chat] starting new conversation before send")
+		if err := h.NewConversation(ctx); err != nil {
+			log.Printf("[chat] new conversation failed: %v", err)
+		}
+		step("newConversation")
 	}
 
 	if err := h.ensureReady(); err != nil {
@@ -239,15 +248,16 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 	}
 
 	log.Printf("[chat] got response: %d chars, thinking: %d chars", len([]rune(content)), len([]rune(thinking)))
-	h.lastActivity = time.Now()
+	h.lastActivity.Store(time.Now().UnixNano())
 	return &ChatResponse{Content: content, Thinking: thinking}, nil
 }
 
 func (h *ChatHandler) ShouldNewConversation() bool {
-	if h.lastActivity.IsZero() {
+	ns := h.lastActivity.Load()
+	if ns == 0 {
 		return true
 	}
-	return time.Since(h.lastActivity) > 10*time.Minute
+	return time.Since(time.Unix(0, ns)) > 10*time.Minute
 }
 
 func (h *ChatHandler) ensureReady() error {
@@ -270,17 +280,19 @@ func (h *ChatHandler) ensureReady() error {
 
 func (h *ChatHandler) switchToTextMode(ctx context.Context) error {
 	var currentMode string
-	_ = chromedp.Run(h.session.Context(),
+	if err := chromedp.Run(h.session.Context(),
 		chromedp.Evaluate(`(()=>{
 			const radios = document.querySelectorAll('[role="radio"]');
 			for (const r of radios) {
-				if (r.getAttribute('aria-checked') === 'true' || r.classList.contains('_37fb93d')) {
+				if (r.getAttribute('aria-checked') === 'true') {
 					return (r.textContent || '').trim();
 				}
 			}
 			return '';
 		})()`, &currentMode),
-	)
+	); err != nil {
+		log.Printf("[chat] detect text mode error: %v", err)
+	}
 	log.Printf("[chat] current mode: %q", currentMode)
 	if currentMode == "" || !strings.Contains(currentMode, "识图") {
 		log.Println("[chat] already in text mode")
@@ -320,17 +332,19 @@ func (h *ChatHandler) switchToImageMode(ctx context.Context) error {
 
 func (h *ChatHandler) switchToImageModeDepth(ctx context.Context, depth int) error {
 	var currentMode string
-	_ = chromedp.Run(h.session.Context(),
+	if err := chromedp.Run(h.session.Context(),
 		chromedp.Evaluate(`(()=>{
 			const radios = document.querySelectorAll('[role="radio"]');
 			for (const r of radios) {
-				if (r.getAttribute('aria-checked') === 'true' || r.classList.contains('_37fb93d')) {
+				if (r.getAttribute('aria-checked') === 'true') {
 					return (r.textContent || '').trim();
 				}
 			}
 			return '';
 		})()`, &currentMode),
-	)
+	); err != nil {
+		log.Printf("[chat] detect image mode error: %v", err)
+	}
 
 	log.Printf("[chat] current mode: %q", currentMode)
 
@@ -380,17 +394,19 @@ func (h *ChatHandler) switchToImageModeDepth(ctx context.Context, depth int) err
 		return h.switchToImageModeDepth(ctx, depth+1)
 	}
 
-	_ = chromedp.Run(h.session.Context(),
+	if err := chromedp.Run(h.session.Context(),
 		chromedp.Evaluate(`(()=>{
 			const radios = document.querySelectorAll('[role="radio"]');
 			for (const r of radios) {
-				if (r.getAttribute('aria-checked') === 'true' || r.classList.contains('_37fb93d')) {
+				if (r.getAttribute('aria-checked') === 'true') {
 					return (r.textContent || '').trim();
 				}
 			}
 			return '';
 		})()`, &currentMode),
-	)
+	); err != nil {
+		log.Printf("[chat] detect image mode error: %v", err)
+	}
 
 	log.Printf("[chat] after click, mode: %q", currentMode)
 
@@ -463,9 +479,11 @@ func (h *ChatHandler) uploadImage(filePath string) error {
 func (h *ChatHandler) injectInterceptor() error {
 	// 检查页面中是否实际存在拦截器（页面重载后会丢失）
 	var injected bool
-	chromedp.Run(h.session.Context(),
+	if err := chromedp.Run(h.session.Context(),
 		chromedp.Evaluate(`window.__dsInjectDone === true`, &injected),
-	)
+	); err != nil {
+		log.Printf("[chat] check interceptor error: %v, will re-inject", err)
+	}
 
 	if !injected {
 		err := chromedp.Run(h.session.Context(),
@@ -850,7 +868,9 @@ func lineLevelDedup(lines []string) []string {
 		}
 		// Only replace if curr is a strict superset of prev (curr starts with prev and is longer)
 		// This handles incremental SSE updates where a line grows over time
-		if len(curr) > len(prev) && len(prev) > 20 && strings.HasPrefix(curr, prev) {
+		// Also require curr to be at most 2x the length of prev to avoid merging
+		// unrelated lines that happen to share a long prefix
+		if len(curr) > len(prev) && len(prev) > 20 && strings.HasPrefix(curr, prev) && len(curr) <= len(prev)*2 {
 			result[len(result)-1] = curr
 			continue
 		}
@@ -867,8 +887,18 @@ func isMarkdownSeparator(line string) bool {
 	if trimmed == "" {
 		return true
 	}
-	if strings.HasPrefix(trimmed, "---") || strings.HasPrefix(trimmed, "***") || strings.HasPrefix(trimmed, "___") {
-		return true
+	// 检查整行是否完全由同一分隔符字符构成（至少3个），允许前后空格
+	// 例如 "---", "***", "___" 是分隔符，但 "---text" 不是
+	if len(trimmed) >= 3 {
+		ch := trimmed[0]
+		if ch == '-' || ch == '*' || ch == '_' {
+			for i := 1; i < len(trimmed); i++ {
+				if trimmed[i] != ch {
+					return false
+				}
+			}
+			return true
+		}
 	}
 	return false
 }
@@ -1011,13 +1041,13 @@ func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, t
 	// 只尝试其他账号，不重复登录当前账号（accountCount-1 次）
 	// 如果只有一个账号，则直接返回错误
 	if accountCount <= 1 {
-		return &ChatResponse{Content: "服务器繁忙，请稍后重试"}, nil
+		return nil, fmt.Errorf("服务器繁忙，请稍后重试")
 	}
 	for attempt := 0; attempt < accountCount-1; attempt++ {
 		newEmail, switchErr := h.session.SwitchAccount()
 		if switchErr != nil {
 			log.Printf("[chat] switch account failed: %v (only one account or login error)", switchErr)
-			return &ChatResponse{Content: "服务器繁忙，请稍后重试"}, nil
+			return nil, fmt.Errorf("切换账号失败: %w", switchErr)
 		}
 		log.Printf("[chat] attempt %d/%d: switched to account: %s", attempt+1, accountCount, newEmail)
 
@@ -1062,7 +1092,7 @@ func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, t
 	}
 
 	log.Printf("[chat] all %d accounts exhausted, giving up", accountCount)
-	return &ChatResponse{Content: "所有账号都繁忙，请稍后重试"}, nil
+	return nil, fmt.Errorf("所有账号都繁忙，请稍后重试")
 }
 
 // retryWithNewConversation 开启新对话后重新发送消息
