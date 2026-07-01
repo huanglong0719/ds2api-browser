@@ -18,8 +18,8 @@
 
 ### 前置要求
 
-- Go 1.21+
-- Chrome 浏览器
+- Go 1.24+（使用标准 Go 工具链，go.mod 锁定 go 1.24.0）
+- Chrome 浏览器（支持 Chrome 150+，含便携版）
 - DeepSeek 网页版账号
 
 ### 方式一：一键启动（推荐）
@@ -32,7 +32,7 @@
 .\stop.ps1
 ```
 
-### 方式二：手动启动
+### 方式二：手动编译运行
 
 ```bash
 # 1. 复制配置文件
@@ -40,9 +40,16 @@ cp browser_config.example.json browser_config.json
 
 # 2. 编辑配置，填入账号和 API Key
 
-# 3. 编译运行
-go build -o ds2api-browser.exe .
+# 3. 编译运行（vendor 目录已包含 cdproto 补丁）
+go build -mod=vendor -o ds2api-browser.exe .
 ./ds2api-browser.exe
+```
+
+### 方式三：仅运行（无需编译，直接使用预编译 exe）
+
+```powershell
+cd D:\ds2api-browser
+.\ds2api-browser.exe
 ```
 
 ### 验证服务
@@ -283,23 +290,27 @@ curl http://127.0.0.1:8766/v1/debug
 ds2api-browser/
 ├── main.go                    # 入口：加载配置、启动 Chrome、HTTP 服务、优雅关闭
 ├── api/
-│   └── handler.go             # API 路由、认证、内容提取、新对话检测、响应格式化
+│   ├── handler.go             # API 路由、认证、内容提取、新对话检测、响应格式化
+│   └── handler_test.go        # API 单元测试（extractContent、writeError 等）
 ├── browser/
 │   ├── session.go             # Chrome 进程管理、CDP 连接、登录、导航、目标跟踪
 │   ├── chat.go                # 聊天核心：模式切换、消息输入、三段发送、响应等待
+│   ├── chat_test.go           # 聊天核心单元测试（去重、错误检测等）
 │   └── injector.go            # JavaScript 拦截器：SSE/EventSource/DOM 观察器注入
 ├── config/
 │   └── config.go              # 配置文件加载与解析
+├── vendor/                    # 依赖包（含 cdproto IPAddressSpace Loopback 补丁）
 ├── cmd/
 │   ├── minitest/              # 最小化 Chrome 测试工具
 │   ├── capture_requests/      # SSE 捕获验证工具
 │   └── alloc_test/            # Chrome 分配器稳定性测试
-├── start.ps1                  # 一键启动脚本（Chrome + 服务）
+├── start.ps1                  # 一键启动脚本
 ├── stop.ps1                   # 一键停止脚本
 ├── check_new_conv.ps1         # 新对话检测测试脚本
 ├── browser_config.example.json # 配置模板
 ├── go.mod / go.sum
-└── README.md
+├── README.md
+└── ds2api-browser.exe          # 编译后的可执行文件
 ```
 
 ## 第三方客户端配置
@@ -315,6 +326,32 @@ ds2api-browser/
 - NextChat
 - OpenAI 兼容的任何客户端
 
-## 关联项目
+## 环境依赖
 
-- **[ds2api](https://github.com/huanglong0719/ds2api)** - 主项目，完整的 DeepSeek API 代理服务（本服务可作为其图片识别后端）
+| 组件 | 版本 | 说明 |
+|------|------|------|
+| Go | 1.24.0+ (`go 1.24.0` in go.mod) | 标准工具链 |
+| chromedp | v0.13.0 | Chrome DevTools Protocol 驱动 |
+| cdproto | v0.0.0-20250222（含补丁） | CDP 类型定义，vendor 中已打 `IPAddressSpace Loopback` 补丁 |
+| Chrome | 150+ | 便携版位于 `chrome-portable/` |
+
+### 依赖管理
+
+- **vendor 目录**：依赖已 vendor，编译时使用 `go build -mod=vendor`
+- **cdproto 补丁**：`vendor/github.com/chromedp/cdproto/network/types.go` 中添加了 `IPAddressSpaceLoopback` 枚举值
+- **升级依赖**：修改 go.mod 后执行 `go mod vendor` 重新 vendor
+
+## 测试
+
+```bash
+# 运行所有单元测试
+go test ./... -v
+
+# 运行特定包测试
+go test ./browser/... -v -run TestDeduplicateContent
+go test ./api/... -v -run TestExtractContent
+
+# 手动功能验证
+Invoke-RestMethod http://127.0.0.1:8766/healthz
+Invoke-RestMethod http://127.0.0.1:8766/v1/debug
+```
