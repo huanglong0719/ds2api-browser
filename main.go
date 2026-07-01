@@ -6,9 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -45,6 +48,9 @@ func main() {
 		}
 	}
 
+	// 释放端口：如果端口已被其他进程占用，自动杀掉
+	freePort(cfg.Port)
+
 	chatHandler := browser.NewChatHandler(session, cfg.ResponseTimeoutSec)
 	apiHandler := api.NewHandler(cfg, chatHandler)
 
@@ -71,6 +77,8 @@ func main() {
 	select {
 	case err := <-serverErr:
 		log.Printf("[main] server error: %v", err)
+		log.Println("[main] the window will close in 10 seconds...")
+		time.Sleep(10 * time.Second)
 	case sig := <-sigCh:
 		log.Printf("[main] received signal: %v", sig)
 	}
@@ -82,4 +90,40 @@ func main() {
 		log.Printf("[main] server shutdown error: %v", err)
 	}
 	session.Close()
+}
+
+// freePort 检查端口是否被占用，如果是则杀掉占用进程
+// 解决双击 exe 时因旧进程未退出导致端口冲突的问题
+func freePort(port int) {
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+	if err != nil {
+		return // 端口空闲
+	}
+	conn.Close()
+
+	log.Printf("[main] port %d is in use, trying to kill the owning process...", port)
+	out, err := exec.Command("netstat", "-ano").Output()
+	if err != nil {
+		log.Printf("[main] netstat failed: %v", err)
+		return
+	}
+	portSuffix := fmt.Sprintf(":%d", port)
+	for _, line := range strings.Split(string(out), "\n") {
+		cols := strings.Fields(line)
+		if len(cols) < 5 || cols[3] != "LISTENING" {
+			continue
+		}
+		if !strings.HasSuffix(cols[1], portSuffix) {
+			continue
+		}
+		pid := 0
+		if _, err := fmt.Sscanf(cols[4], "%d", &pid); err != nil || pid <= 0 || pid == os.Getpid() {
+			continue
+		}
+		log.Printf("[main] killing PID %d on port %d", pid, port)
+		exec.Command("taskkill", "/F", "/PID", fmt.Sprintf("%d", pid)).Run()
+		time.Sleep(500 * time.Millisecond)
+		return // 杀掉一个就够了
+	}
 }
