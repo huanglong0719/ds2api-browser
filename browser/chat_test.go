@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -199,7 +200,7 @@ func TestHasConvLimit(t *testing.T) {
 
 func TestSendTextChatEmptyText(t *testing.T) {
 	h := &ChatHandler{}
-	_, err := h.SendTextChat(nil, "", false)
+	_, err := h.SendTextChat(context.TODO(), "", false)
 	if err == nil {
 		t.Error("SendTextChat with empty text should return error")
 	}
@@ -207,7 +208,7 @@ func TestSendTextChatEmptyText(t *testing.T) {
 
 func TestSendImageChatNoImages(t *testing.T) {
 	h := &ChatHandler{}
-	_, err := h.SendImageChat(nil, &ChatRequest{Text: "hello"}, false)
+	_, err := h.SendImageChat(context.TODO(), &ChatRequest{Text: "hello"}, false)
 	if err == nil {
 		t.Error("SendImageChat with no images should return error")
 	}
