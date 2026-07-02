@@ -769,7 +769,17 @@ func (h *ChatHandler) waitForResponse(ctx context.Context, timeout time.Duration
 				if len(rawSSE) > 0 {
 					os.WriteFile(filepath.Join(os.TempDir(), "ds_raw_sse.txt"), []byte(rawSSE), 0644)
 				}
-				return deduplicateContent(r.C), deduplicateContent(r.T), r.Lim, r.Busy, nil
+				c := deduplicateContent(r.C)
+				t := deduplicateContent(r.T)
+				// 兜底：当 content 极短而 thinking 包含大量实质内容时，
+				// 说明 DeepSeek 可能把完整回复放在了 THINK fragment（结构化 JSON 等场景），
+				// 此时将 thinking 合并到 content 作为最终输出
+				if len([]rune(c)) < 50 && len([]rune(t)) > 200 {
+					log.Printf("[chat] thinking>capture: content=%d, thinking=%d, using thinking as content", len([]rune(c)), len([]rune(t)))
+					c = t
+					t = ""
+				}
+				return c, t, r.Lim, r.Busy, nil
 			}
 			if !r.D && !r.DD {
 				log.Printf("[chat] waiting... %d chars so far", len([]rune(r.C)))

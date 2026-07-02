@@ -47,7 +47,15 @@ window.fetch = async function(...args) {
 		(function pump() {
 			reader.read().then(({done, value}) => {
 				if (done) return;
-				buf += decoder.decode(value, {stream: true});
+				const chunk = decoder.decode(value, {stream: true});
+				buf += chunk;
+				// 累积原始 SSE 用于调试（上限 20000 字符，覆盖完整流程）
+				if (pathname.indexOf('chat/') >= 0) {
+					window.__dsBrowserRawSSE = (window.__dsBrowserRawSSE || '') + chunk;
+					if (window.__dsBrowserRawSSE.length > 20000) {
+						window.__dsBrowserRawSSE = window.__dsBrowserRawSSE.substring(window.__dsBrowserRawSSE.length - 20000);
+					}
+				}
 				const lines = buf.split('\n');
 				buf = lines.pop() || '';
 				for (const line of lines) {
@@ -81,6 +89,21 @@ window.fetch = async function(...args) {
 							}
 						} else if (d.p === 'response/content' && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
 							window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
+						} else if (typeof d.v === 'string' && !d.p && !d.o && !d.content && !d.thinking) {
+							// 纯 v 字符串包：依据当前 fragment 类型分流到 thinking/capture
+							if (window.__dsCurrentFragmentType === 'THINK' || window.__dsCurrentFragmentType === 'THINKING') {
+								window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + d.v;
+							} else {
+								window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
+							}
+						} else if (d.v && d.v.response) {
+							var r = d.v.response;
+							if (Array.isArray(r.fragments) && r.fragments.length > 0) {
+								var lastFrag = r.fragments[r.fragments.length - 1];
+								if (lastFrag && lastFrag.type) {
+									window.__dsCurrentFragmentType = lastFrag.type;
+								}
+							}
 						}
 						if (d.p === 'response/status' && d.v === 'FINISHED') {
 							window.__dsBrowserDone = true;
@@ -263,6 +286,13 @@ if (OrigES) {
 							window.__dsCurrentFragmentType = lastFrag.type;
 						}
 					} else if (d.p && d.p.indexOf('response/fragments/') === 0 && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
+						if (window.__dsCurrentFragmentType === 'THINK' || window.__dsCurrentFragmentType === 'THINKING') {
+							window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + d.v;
+						} else {
+							window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
+						}
+					} else if (typeof d.v === 'string' && !d.p && !d.o && !d.content && !d.thinking) {
+						// 纯 v 字符串包：依据当前 fragment 类型分流到 thinking/capture
 						if (window.__dsCurrentFragmentType === 'THINK' || window.__dsCurrentFragmentType === 'THINKING') {
 							window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + d.v;
 						} else {

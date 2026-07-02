@@ -22,4 +22,8 @@ test_cn.txt
 test_compare.py
 test_long_text.json
 test_resp.txt
+test_resp_long.txt
 新建文本文档.txt
+debug_*.png
+debug_verify.json
+ds_raw_sse_*.txt

@@ -9,7 +9,7 @@
 - **连续对话** — 重用现有浏览器标签页，同一话题可连续多轮对话
 - **智能新对话检测** — 自动判断是否需要开启新对话（无 assistant 历史记录时）
 - **手动新对话控制** — 通过 `X-New-Conversation` 头或 `?new=true` 参数显式控制
-- **深度思考分离** — 解析 SSE 流中的 `THINK` 和 `RESPONSE` 片段，分别返回 `reasoning_content` 和 `content`
+- **深度思考分离** — 解析 SSE 流中的 `THINK` 和 `RESPONSE` 片段，分别返回 `reasoning_content` 和 `content`，自动适配 DeepSeek 协议变化（纯 v 增量包格式）
 - **OpenAI 兼容接口** — 标准的 `/v1/chat/completions` 端点，支持第三方客户端直接连接
 - **流式/非流式响应** — 同时支持 `stream: true/false`
 - **并发安全** — 内置互斥锁保护，串行处理请求避免浏览器冲突
@@ -241,7 +241,7 @@ curl http://127.0.0.1:8766/v1/debug
 1. **标签页复用** — 不为每次请求创建新标签页，通过 CDP Target 跟踪重用现有标签页，实现连续对话。
 2. **智能模式切换** — 根据请求内容自动切换"默认模式"或"识图模式"，无需客户端关心底层细节。
 3. **三段式发送保障** — Enter 键 → JS 事件链点击 → MouseClickXY 坐标点击 → 键盘回车重试，确保消息在各种场景下都能成功发送。
-4. **SSE 三重拦截** — fetch + XHR + EventSource 三通道独立拦截，Go 层通过 `deduplicateContent()` 去重，三重保障响应完整性。
+4. **SSE 三重拦截** — fetch + XHR + EventSource 三通道独立拦截，每个通道均完整支持各种 SSE 包格式（含纯 v 字符串增量包），Go 层通过 `deduplicateContent()` 去重，三重保障响应完整性。
 5. **并发串行化** — 使用 sync.Mutex 保护 ChatHandler，同一时间只处理一个请求，避免浏览器操作冲突。
 6. **超时保护** — 请求级超时由 `response_timeout_sec` 配置（默认 120 秒），防止 Chrome 卡死导致 goroutine 永久阻塞。
 
