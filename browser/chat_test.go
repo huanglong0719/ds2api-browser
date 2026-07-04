@@ -9,64 +9,64 @@ import (
 
 func TestDeduplicateContent(t *testing.T) {
 	tests := []struct {
-		name string
+		name  string
 		input string
-		want string
+		want  string
 	}{
 		{
-			name: "empty string",
+			name:  "empty string",
 			input: "",
-			want: "",
+			want:  "",
 		},
 		{
-			name: "single line",
+			name:  "single line",
 			input: "hello",
-			want: "hello",
+			want:  "hello",
 		},
 		{
-			name: "no duplicates",
+			name:  "no duplicates",
 			input: "line1\nline2\nline3",
-			want: "line1\nline2\nline3",
+			want:  "line1\nline2\nline3",
 		},
 		{
-			name: "adjacent duplicate lines",
+			name:  "adjacent duplicate lines",
 			input: "hello\nhello\nworld",
-			want: "hello\nworld",
+			want:  "hello\nworld",
 		},
 		{
-			name: "non-adjacent duplicates preserved",
+			name:  "non-adjacent duplicates preserved",
 			input: "a\nb\na",
-			want: "a\nb\na",
+			want:  "a\nb\na",
 		},
 		{
-			name: "incremental update (SSE growth, both >20 chars)",
+			name:  "incremental update (SSE growth, both >20 chars)",
 			input: "this is a short line that is long enough\nthis is a short line that is long enough and continues",
-			want: "this is a short line that is long enough and continues",
+			want:  "this is a short line that is long enough and continues",
 		},
 		{
-			name: "markdown separator dedup",
+			name:  "markdown separator dedup",
 			input: "text\n---\n---\nmore",
-			want: "text\n---\nmore",
+			want:  "text\n---\nmore",
 		},
 		{
-			name: "*** separator dedup",
+			name:  "*** separator dedup",
 			input: "a\n***\n***\nb",
-			want: "a\n***\nb",
+			want:  "a\n***\nb",
 		},
 		{
-			name: "empty line as separator",
+			name:  "empty line as separator",
 			input: "a\n\n\nb",
-			want: "a\n\nb",
+			want:  "a\n\nb",
 		},
 		{
-			name: "realistic SSE scenario (short lines preserved)",
+			name:  "realistic SSE scenario (short lines preserved)",
 			input: "你好\n你好\n你好世界",
-			want: "你好\n你好世界",
+			want:  "你好\n你好世界",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := deduplicateContent(tt.input)
+			got := deduplicateContent(tt.input, "")
 			if got != tt.want {
 				t.Errorf("deduplicateContent() = %q, want %q", got, tt.want)
 			}
@@ -74,41 +74,85 @@ func TestDeduplicateContent(t *testing.T) {
 	}
 }
 
+func TestDeduplicateSingleLineRepeat(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		question string
+		want     string
+	}{
+		{name: "empty", input: "", question: "", want: ""},
+		{name: "short preserved", input: "abc", question: "", want: "abc"},
+		// P1 场景：DeepSeek SSE 先发部分后发完整，如 "2"+"1+1=2"="21+1=2"
+		{name: "partial prefix single char", input: "21+1=2", question: "", want: "1+1=2"},
+		{name: "partial prefix two chars", input: "=21+1=2", question: "", want: "1+1=2"},
+		// P1 场景：DeepSeek SSE 先发完整后发部分，如 "1+1=2"+"1+1"="1+1=21+1"
+		{name: "full then partial repeat", input: "1+1=21+1", question: "", want: "1+1=2"},
+		{name: "full then partial repeat v2", input: "1+1=21+1=2", question: "", want: "1+1=2"},
+		// 不含空格约束保护：含空格的不应当作"部分+完整"模式1
+		{name: "with space not deduped", input: "1+1=2 1+1", question: "", want: "1+1=2 1+1"},
+		// "X + 分隔符 + X" 模式（三重拦截器各自捕获同一完整内容并加分隔符）
+		{name: "triple interceptor repeat", input: "1+1=21+1=2", question: "", want: "1+1=2"},
+		{name: "triple interceptor with space sep", input: "1+1=2 1+1=2", question: "", want: "1+1=2"},
+		// 不应误删普通内容
+		{name: "normal content preserved", input: "Hello World!", question: "", want: "Hello World!"},
+		{name: "long normal content", input: "这是一段普通的中文内容，不应被去重。", question: "", want: "这是一段普通的中文内容，不应被去重。"},
+		// 边界：n<6 不处理
+		{name: "too short", input: "abab", question: "", want: "abab"},
+		// 不应误判短重复（full 长度 < 4）
+		{name: "short full not deduped", input: "abcab", question: "", want: "abcab"},
+		// 模式3：问题回显剥离
+		{name: "echo strip: 42+2 with question 2+2=?", input: "42+2", question: "2+2=? answer with number only", want: "4"},
+		{name: "echo strip: 21+1=? with question 1+1=?", input: "21+1=?", question: "1+1=? answer with number only", want: "2"},
+		{name: "echo strip: normal answer preserved", input: "Paris", question: "what is the capital of France?", want: "Paris"},
+		{name: "echo strip: no question no strip", input: "42+2", question: "", want: "42+2"},
+		{name: "echo strip: long content no strip", input: "This is a long response that should not be stripped of any echo", question: "echo", want: "This is a long response that should not be stripped of any echo"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := deduplicateSingleLineRepeat(tt.input, tt.question)
+			if got != tt.want {
+				t.Errorf("deduplicateSingleLineRepeat(%q, %q) = %q, want %q", tt.input, tt.question, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLineLevelDedup(t *testing.T) {
 	tests := []struct {
-		name string
+		name  string
 		input []string
-		want []string
+		want  []string
 	}{
 		{
-			name: "nil slice",
+			name:  "nil slice",
 			input: nil,
-			want: nil,
+			want:  nil,
 		},
 		{
-			name: "empty slice",
+			name:  "empty slice",
 			input: []string{},
-			want: []string{},
+			want:  []string{},
 		},
 		{
-			name: "single element",
+			name:  "single element",
 			input: []string{"hello"},
-			want: []string{"hello"},
+			want:  []string{"hello"},
 		},
 		{
-			name: "dedup adjacent",
+			name:  "dedup adjacent",
 			input: []string{"a", "a", "b"},
-			want: []string{"a", "b"},
+			want:  []string{"a", "b"},
 		},
 		{
-			name: "short lines not merged below 20-char threshold",
+			name:  "short lines not merged below 20-char threshold",
 			input: []string{"short", "short and longer text here"},
-			want: []string{"short", "short and longer text here"},
+			want:  []string{"short", "short and longer text here"},
 		},
 		{
-			name: "short line not treated as incremental",
+			name:  "short line not treated as incremental",
 			input: []string{"ab", "abc"},
-			want: []string{"ab", "abc"},
+			want:  []string{"ab", "abc"},
 		},
 	}
 	for _, tt := range tests {
@@ -154,9 +198,9 @@ func TestIsMarkdownSeparator(t *testing.T) {
 
 func TestHasServerBusy(t *testing.T) {
 	tests := []struct {
-		name string
+		name    string
 		content string
-		want bool
+		want    bool
 	}{
 		{"empty", "", false},
 		{"正常内容", "你好，有什么可以帮助你的？", false},
@@ -178,9 +222,9 @@ func TestHasServerBusy(t *testing.T) {
 
 func TestHasConvLimit(t *testing.T) {
 	tests := []struct {
-		name string
+		name    string
 		content string
-		want bool
+		want    bool
 	}{
 		{"empty", "", false},
 		{"正常内容", "继续我们的对话", false},

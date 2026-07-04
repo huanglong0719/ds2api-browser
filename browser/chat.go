@@ -175,7 +175,13 @@ func (h *ChatHandler) SendImageChat(ctx context.Context, req *ChatRequest, shoul
 	if len(req.Images) == 0 && len(req.Files) == 0 {
 		return nil, fmt.Errorf("no images or files provided")
 	}
-	return h.sendChat(ctx, "image", req.Text, req.Images, req.Files, shouldNewConv)
+	// 模式选择：有图片走识图模式（需要 OCR），纯文件走快速模式（文本处理）
+	mode := "image"
+	if len(req.Images) == 0 && len(req.Files) > 0 {
+		mode = "text"
+		log.Printf("[chat] file-only request, using text mode (fast) instead of image mode")
+	}
+	return h.sendChat(ctx, mode, req.Text, req.Images, req.Files, shouldNewConv)
 }
 
 func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, images []string, files []string, shouldNewConv bool) (*ChatResponse, error) {
@@ -335,7 +341,7 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 	}
 	step("immediateErrorDetection")
 
-	content, thinking, convLimit, serverBusy, err := h.waitForResponse(ctx, h.responseTimeout)
+	content, thinking, convLimit, serverBusy, err := h.waitForResponse(ctx, h.responseTimeout, text)
 	if err != nil {
 		return &ChatResponse{Error: err.Error()}, fmt.Errorf("wait response: %w", err)
 	}
@@ -396,36 +402,75 @@ const getDirectText = `(el) => {
 }`
 
 // getCurrentModeFromRadio 获取当前选中 radio 的文本，先尝试直接文本节点，回退到 textContent 并去重
+// 增强：增加 toggle button / button group / aria-pressed 选择器回退
+// 注意：要排除"深度思考"和"智能搜索"toggle，它们不是文本/识图模式切换
 const getCurrentModeJS = `(()=>{
-	const radios = document.querySelectorAll('[role="radiogroup"] [role="radio"]');
+	// 模式关键词（用于识别文本/识图模式切换控件）
+	const modeKeywords = ['识图', '默认', '快速'];
+	// 排除关键词（这些是 toggle，不是模式切换）
+	const excludeKeywords = ['深度思考', '智能搜索', '联网搜索'];
+
+	function isModeControl(text) {
+		if (!text) return false;
+		for (const ex of excludeKeywords) {
+			if (text.indexOf(ex) !== -1) return false;
+		}
+		for (const kw of modeKeywords) {
+			if (text.indexOf(kw) !== -1) return true;
+		}
+		return false;
+	}
+
+	function getDirectText(el) {
+		let txt = '';
+		for (const n of el.childNodes) {
+			if (n.nodeType === 3) txt += n.textContent;
+		}
+		return txt.trim();
+	}
+
+	function normalizeModeText(txt) {
+		if (!txt) return '';
+		return txt.replace(/(识图模式)+/g, '识图模式').replace(/(默认模式)+/g, '默认模式').replace(/(快速模式)+/g, '快速模式');
+	}
+
+	// 1. 优先查 [role="radiogroup"] [role="radio"]
+	let radios = document.querySelectorAll('[role="radiogroup"] [role="radio"]');
 	if (radios.length === 0) {
-		// 回退方案：查找所有 role=radio
-		const allRadios = document.querySelectorAll('[role="radio"]');
-		for (const r of allRadios) {
-			if (r.getAttribute('aria-checked') === 'true') {
-				let txt = '';
-				for (const n of r.childNodes) {
-					if (n.nodeType === 3) txt += n.textContent;
-				}
-				return txt.trim() || (r.textContent || '').trim().replace(/(识图模式)+/g, '识图模式').replace(/(默认模式)+/g, '默认模式').replace(/(快速模式)+/g, '快速模式');
-			}
-		}
-		// 回退：没找到 radio，检查是否有实际已上传的图片预览（对话进行中 radio 可能被隐藏）
-		// 注意：input[type="file"] 在所有模式中都存在（附件按钮），不能作为识图模式的依据
-		const previewImgs = document.querySelectorAll('img[src*="blob:"], img[src*="data:"]');
-		if (previewImgs.length > 0) {
-			return '识图模式'; // 有图片预览，说明处于识图模式且有已上传图片
-		}
-		return '';
+		radios = document.querySelectorAll('[role="radio"]');
 	}
 	for (const r of radios) {
 		if (r.getAttribute('aria-checked') === 'true') {
-			let txt = '';
-			for (const n of r.childNodes) {
-				if (n.nodeType === 3) txt += n.textContent;
-			}
-			return txt.trim() || (r.textContent || '').trim().replace(/(识图模式)+/g, '识图模式').replace(/(默认模式)+/g, '默认模式').replace(/(快速模式)+/g, '快速模式');
+			let txt = getDirectText(r) || normalizeModeText((r.textContent || '').trim());
+			if (isModeControl(txt)) return txt;
 		}
+	}
+
+	// 2. 回退：查找 button / div.ds-toggle-button / [aria-pressed] 中含模式关键词的元素
+	const toggleCandidates = document.querySelectorAll(
+		'button, [role="button"], div.ds-toggle-button, [aria-pressed], [class*="mode"], [data-mode]'
+	);
+	for (const el of toggleCandidates) {
+		let txt = getDirectText(el) || (el.textContent || '').trim();
+		if (!isModeControl(txt)) continue;
+		// 检查是否"选中"：aria-checked, aria-pressed, class 含 selected/active
+		const isSelected =
+			el.getAttribute('aria-checked') === 'true' ||
+			el.getAttribute('aria-pressed') === 'true' ||
+			el.getAttribute('data-state') === 'active' ||
+			(el.className || '').includes('--selected') ||
+			(el.className || '').includes('--active') ||
+			(el.className || '').includes('active');
+		if (isSelected) {
+			return normalizeModeText(txt);
+		}
+	}
+
+	// 3. 回退：检查是否有实际已上传的图片预览（对话进行中 radio 可能被隐藏）
+	// 注意：input[type="file"] 在所有模式中都存在（附件按钮），不能作为识图模式的依据
+	const previewImgs = document.querySelectorAll('img[src*="blob:"], img[src*="data:"]');
+	if (previewImgs.length > 0) {
+		return '识图模式';
 	}
 	return '';
 })()`
@@ -709,7 +754,17 @@ func (h *ChatHandler) injectInterceptor() error {
 		}
 		log.Println("[chat] interceptor injected (page reloaded or first time)")
 	}
-	return chromedp.Run(h.session.Context(),
+
+	// 基于网页状态等待旧 SSE 流完成（替代固定 300ms 等待）
+	// 场景：NewConversation 后，DeepSeek 可能取消当前回复，但旧 SSE 流的残留数据可能还在推送
+	// 检测：如果 __dsBrowserDone 为 false 且 capture 非空，说明有进行中的回复
+	// 等待 done=true 或 capture 为空，超时 10 秒兜底（应对网络异常）
+	if err := h.waitForOldStreamDone(10 * time.Second); err != nil {
+		log.Printf("[chat] wait for old stream done: %v (continuing)", err)
+	}
+
+	// 第一次重置所有捕获变量
+	if err := chromedp.Run(h.session.Context(),
 		chromedp.Evaluate(`(()=>{
 			window.__dsBrowserCapture = '';
 			window.__dsBrowserThinking = '';
@@ -719,7 +774,75 @@ func (h *ChatHandler) injectInterceptor() error {
 			window.__dsConvLimitHit = false;
 			window.__dsServerBusy = false;
 		})()`, nil),
+	); err != nil {
+		return err
+	}
+
+	// 等待 capture 内容稳定（连续 2 次轮询不变），确保旧 SSE 流的残留数据全部到达
+	// 这替代了原来的固定等待，基于实际状态检测
+	h.waitForCaptureStable(2 * time.Second)
+
+	// 第二次重置 capture 和 thinking，清空旧 SSE 流推送的残留数据
+	return chromedp.Run(h.session.Context(),
+		chromedp.Evaluate(`window.__dsBrowserCapture=''; window.__dsBrowserThinking='';`, nil),
 	)
+}
+
+// waitForOldStreamDone 等待旧 SSE 流完成（基于拦截器 done 标志和 capture 状态）
+// 当 done=true 或 capture 为空时返回；超时返回错误
+func (h *ChatHandler) waitForOldStreamDone(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		var state string
+		err := chromedp.Run(h.session.Context(),
+			chromedp.Evaluate(`JSON.stringify({
+				done: window.__dsBrowserDone || false,
+				capture: window.__dsBrowserCapture || ''
+			})`, &state),
+		)
+		if err != nil {
+			return err
+		}
+		var s struct {
+			Done    bool   `json:"done"`
+			Capture string `json:"capture"`
+		}
+		if json.Unmarshal([]byte(state), &s) == nil {
+			// done=true 说明旧流已完成；capture 为空说明没有进行中的回复
+			if s.Done || s.Capture == "" {
+				return nil
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("timeout waiting for old stream to finish after %v", timeout)
+}
+
+// waitForCaptureStable 等待 capture 内容稳定（连续 N 次轮询不变）或超时
+// 用于确保旧 SSE 流的残留数据全部到达后再重置
+func (h *ChatHandler) waitForCaptureStable(timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	var lastCapture string
+	stableCount := 0
+	for time.Now().Before(deadline) {
+		var capture string
+		err := chromedp.Run(h.session.Context(),
+			chromedp.Evaluate(`window.__dsBrowserCapture || ''`, &capture),
+		)
+		if err != nil {
+			break
+		}
+		if capture == lastCapture {
+			stableCount++
+			if stableCount >= 2 {
+				return
+			}
+		} else {
+			stableCount = 0
+			lastCapture = capture
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func (h *ChatHandler) sendMessage(text string) error {
@@ -865,7 +988,7 @@ func (h *ChatHandler) pressEnter() (bool, error) {
 		chromedp.Run(h.session.Context(),
 			chromedp.Evaluate(`(()=>{
 				const ta = document.querySelector('textarea');
-				return ta && ta.value && ta.value.trim().length > 0;
+				return !!(ta && ta.value && ta.value.trim().length > 0);
 			})()`, &stillInBox),
 		)
 		if !stillInBox {
@@ -890,7 +1013,7 @@ func (h *ChatHandler) pressEnter() (bool, error) {
 	chromedp.Run(h.session.Context(),
 		chromedp.Evaluate(`(()=>{
 			const ta = document.querySelector('textarea');
-			return ta && ta.value && ta.value.trim().length > 0;
+			return !!(ta && ta.value && ta.value.trim().length > 0);
 		})()`, &stillInBox),
 	)
 	if !stillInBox {
@@ -933,123 +1056,150 @@ func (h *ChatHandler) pressEnter() (bool, error) {
 }
 
 func (h *ChatHandler) ensureMessageSent() error {
-	// 优先用 JS 直接查找 primary 按钮并点击（更精确）
-	var jsClickedStr string
-	chromedp.Run(h.session.Context(),
-		chromedp.Evaluate(`(()=>{
-			// 先找 ds-button--primary（DeepSeek 的发送按钮）
-			let btns = document.querySelectorAll('.ds-button--primary, [class*="primary"][class*="send"], button[aria-label*="send"], button[aria-label*="发送"]');
-			if (btns.length === 0) {
-				// 回退：找 input 区附近最右按钮
-				const ta = document.querySelector('textarea');
-				if (!ta) return 'no_textarea';
-				const taBottom = ta.getBoundingClientRect().bottom;
-				btns = document.querySelectorAll('button, [role="button"]');
-				let rightmostBtn = null, rightmostX = -1;
-				for (const b of btns) {
-					const r = b.getBoundingClientRect();
-					if (r.width === 0 || r.height === 0) continue;
-					if (Math.abs(r.y + r.height/2 - taBottom) >= 80) continue;
-					if (r.x + r.width/2 > rightmostX) {
-						rightmostX = r.x + r.width/2;
-						rightmostBtn = b;
-					}
-				}
-				if (rightmostBtn) {
-					btns = [rightmostBtn];
-				} else {
-					return JSON.stringify({found:false, reason:'no_nearby_btn'});
-				}
-			}
-			// 尝试点击找到的按钮
-			for (const b of btns) {
-				const r = b.getBoundingClientRect();
-				if (r.width === 0 || r.height === 0) continue;
-				if ((b.disabled === true || b.getAttribute('aria-disabled') === 'true')) {
-					continue; // 跳过禁用按钮
-				}
-				b.focus();
-				b.click();
-				b.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true}));
-				b.dispatchEvent(new MouseEvent('mouseup', {bubbles: true, cancelable: true}));
-				b.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
-				return JSON.stringify({
-					found: true,
-					x: Math.round(r.x + r.width/2),
-					y: Math.round(r.y + r.height/2),
-					tag: b.tagName,
-					cls: (b.getAttribute('class')||'').substring(0,50),
-					disabled: b.disabled === true || b.getAttribute('aria-disabled') === 'true'
-				});
-			}
-			return JSON.stringify({found:false, reason:'all_btns_disabled'});
-		})()`, &jsClickedStr),
-	)
-	if strings.Contains(jsClickedStr, `"found":true`) {
-		log.Printf("[chat] ensureMessageSent: JS click result: %s", jsClickedStr)
-		time.Sleep(clickDelay)
-		if !h.isTextareaStillFilled() {
-			log.Println("[chat] ensureMessageSent: JS direct click succeeded")
-			return nil
-		}
-		log.Println("[chat] ensureMessageSent: JS direct click failed (textarea still filled)")
-	} else {
-		log.Printf("[chat] ensureMessageSent: no primary button found (%s), trying coordinate-based", jsClickedStr)
-	}
-
-	// 回退方案：坐标定位 + chromedp mouse click
+	// 注意：DeepSeek 的 React 按钮对 JS .click() 无效（参见 session.go checkToggleStates 注释）
+	// 必须用 chromedp.MouseClickXY 真实点击。JS 仅用于定位按钮坐标。
+	// 第一步：用 JS 查找发送按钮并获取坐标（不点击，只定位）
 	var btnPos string
 	err := chromedp.Run(h.session.Context(),
 		chromedp.Evaluate(`(()=>{
 			const ta = document.querySelector('textarea');
-			if (!ta) return 'no_textarea';
+			if (!ta) return JSON.stringify({found:false, reason:'no_textarea'});
+
+			// 候选选择器（按优先级排序）：
+			// 1. 显式发送按钮（aria-label 含 send/发送）
+			// 2. ds-button--primary（DeepSeek 发送按钮主样式）
+			// 3. textarea 附近最右的可点击按钮
+			const candidates = [];
+			const seen = new Set();
+
+			function addBtn(b, source) {
+				if (!b || seen.has(b)) return;
+				const r = b.getBoundingClientRect();
+				if (r.width === 0 || r.height === 0) return;
+				if (b.disabled === true || b.getAttribute('aria-disabled') === 'true') return;
+				seen.add(b);
+				candidates.push({
+					el: b,
+					x: Math.round(r.x + r.width/2),
+					y: Math.round(r.y + r.height/2),
+					cls: (b.getAttribute('class')||'').substring(0,60),
+					text: (b.textContent||'').trim().substring(0,15),
+					source: source,
+					// 优先级分数：越高越优先
+					score: 0
+				});
+			}
+
+			// 1. aria-label 匹配
+			document.querySelectorAll('button[aria-label*="send" i], button[aria-label*="发送"], [role="button"][aria-label*="send" i], [role="button"][aria-label*="发送"]').forEach(b => addBtn(b, 'aria_label'));
+
+			// 2. ds-button--primary
+			document.querySelectorAll('.ds-button--primary').forEach(b => addBtn(b, 'primary_class'));
+
+			// 3. textarea 附近最右按钮（识图模式下发送按钮可能不是 primary）
 			const taBottom = ta.getBoundingClientRect().bottom;
-			const allBtns = document.querySelectorAll('[role="button"], button');
-			let rightmostBtn = null;
-			let rightmostX = -1;
+			const allBtns = document.querySelectorAll('button, [role="button"]');
+			let rightmostBtn = null, rightmostX = -1;
 			for (const b of allBtns) {
 				const r = b.getBoundingClientRect();
 				if (r.width === 0 || r.height === 0) continue;
-				if (Math.abs(r.y + r.height/2 - taBottom) >= 80) continue;
+				if (b.disabled === true || b.getAttribute('aria-disabled') === 'true') continue;
+				// Y 范围放宽到 120px（识图模式下按钮可能因图片预览被推下）
+				if (Math.abs(r.y + r.height/2 - taBottom) >= 120) continue;
 				const centerX = r.x + r.width / 2;
 				if (centerX > rightmostX) {
 					rightmostX = centerX;
 					rightmostBtn = b;
 				}
 			}
-			if (rightmostBtn) {
-				const r = rightmostBtn.getBoundingClientRect();
-				return JSON.stringify({
-					found: true,
-					x: Math.round(r.x + r.width/2),
-					y: Math.round(r.y + r.height/2),
-					tag: rightmostBtn.tagName,
-					cls: (rightmostBtn.getAttribute('class')||'').toString().substring(0,50),
-					disabled: rightmostBtn.disabled === true || rightmostBtn.getAttribute('aria-disabled') === 'true'
-				});
+			if (rightmostBtn) addBtn(rightmostBtn, 'rightmost');
+
+			if (candidates.length === 0) {
+				return JSON.stringify({found:false, reason:'no_send_btn', taValue: (ta.value||'').substring(0,30)});
 			}
-			return JSON.stringify({found: false});
+
+			// 计算优先级分数
+			for (const c of candidates) {
+				if (c.source === 'aria_label') c.score += 100;
+				if (c.source === 'primary_class') c.score += 50;
+				if (c.source === 'rightmost') c.score += 10;
+				// 文本含"发送"加分
+				if (c.text.indexOf('发送') >= 0 || c.text.toLowerCase().indexOf('send') >= 0) c.score += 30;
+				// class 含 send 加分
+				if (c.cls.toLowerCase().indexOf('send') >= 0) c.score += 20;
+			}
+			candidates.sort((a,b) => b.score - a.score);
+			const best = candidates[0];
+			return JSON.stringify({
+				found: true,
+				x: best.x,
+				y: best.y,
+				cls: best.cls,
+				text: best.text,
+				source: best.source,
+				score: best.score,
+				candidateCount: candidates.length
+			});
 		})()`, &btnPos),
 	)
-	if strings.Contains(btnPos, `"found":true`) && !strings.Contains(btnPos, `"disabled":true`) && err == nil {
-		var pos struct {
-			Found    bool `json:"found"`
-			X        int  `json:"x"`
-			Y        int  `json:"y"`
-			Disabled bool `json:"disabled"`
-		}
-		json.Unmarshal([]byte(btnPos), &pos)
-		log.Printf("[chat] ensureMessageSent: found button at (%d,%d), trying mouse click", pos.X, pos.Y)
-		if h.tryMouseClickXY(pos.X, pos.Y) {
-			log.Println("[chat] ensureMessageSent: mouse click succeeded")
-			return nil
-		}
-		log.Println("[chat] ensureMessageSent: mouse click failed")
-	} else {
-		log.Printf("[chat] ensureMessageSent: no usable button (btnPos=%q, err=%v)", btnPos, err)
+
+	if err != nil || !strings.Contains(btnPos, `"found":true`) {
+		log.Printf("[chat] ensureMessageSent: no button found (btnPos=%q, err=%v)", btnPos, err)
+		// 最终回退：键盘 Enter
+		log.Println("[chat] ensureMessageSent: trying keyboard enter fallback")
+		return h.keyboardEnterFallback()
 	}
 
-	// 最终回退：键盘 Enter 重试
+	var pos struct {
+		Found          bool   `json:"found"`
+		X              int    `json:"x"`
+		Y              int    `json:"y"`
+		Cls            string `json:"cls"`
+		Text           string `json:"text"`
+		Source         string `json:"source"`
+		Score          int    `json:"score"`
+		CandidateCount int    `json:"candidateCount"`
+	}
+	json.Unmarshal([]byte(btnPos), &pos)
+	log.Printf("[chat] ensureMessageSent: button at (%d,%d) cls=%q source=%s score=%d candidates=%d",
+		pos.X, pos.Y, pos.Cls, pos.Source, pos.Score, pos.CandidateCount)
+
+	// 第二步：用 chromedp.MouseClickXY 真实点击（React 按钮必须用此方式）
+	// 尝试两次：第一次可能因时序问题失败
+	for attempt := 1; attempt <= 2; attempt++ {
+		if h.tryMouseClickXY(pos.X, pos.Y) {
+			log.Printf("[chat] ensureMessageSent: mouse click succeeded (attempt %d)", attempt)
+			return nil
+		}
+		log.Printf("[chat] ensureMessageSent: mouse click attempt %d failed", attempt)
+		// 等待后重试
+		if attempt < 2 {
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+
+	// 第三步：回退到 JS 点击 + 完整事件序列（某些非 React 按钮可能生效）
+	log.Println("[chat] ensureMessageSent: trying JS event sequence")
+	chromedp.Run(h.session.Context(),
+		chromedp.Evaluate(fmt.Sprintf(`(()=>{
+			const el = document.elementFromPoint(%d, %d);
+			if (!el) return 'no_element';
+			el.focus();
+			el.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true, cancelable: true}));
+			el.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true}));
+			el.dispatchEvent(new PointerEvent('pointerup', {bubbles: true, cancelable: true}));
+			el.dispatchEvent(new MouseEvent('mouseup', {bubbles: true, cancelable: true}));
+			el.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
+			return 'dispatched';
+		})()`, pos.X, pos.Y), nil),
+	)
+	time.Sleep(clickDelay)
+	if !h.isTextareaStillFilled() {
+		log.Println("[chat] ensureMessageSent: JS event sequence succeeded")
+		return nil
+	}
+
+	// 最终回退：键盘 Enter
 	log.Println("[chat] ensureMessageSent: trying keyboard enter fallback")
 	return h.keyboardEnterFallback()
 }
@@ -1150,7 +1300,7 @@ func (h *ChatHandler) isTextareaStillFilled() bool {
 	err := chromedp.Run(h.session.Context(),
 		chromedp.Evaluate(`(()=>{
 			const ta = document.querySelector('textarea');
-			return ta && ta.value && ta.value.trim().length > 0;
+			return !!(ta && ta.value && ta.value.trim().length > 0);
 		})()`, &stillFilled),
 	)
 	if err != nil {
@@ -1160,7 +1310,7 @@ func (h *ChatHandler) isTextareaStillFilled() bool {
 	return stillFilled
 }
 
-func (h *ChatHandler) waitForResponse(ctx context.Context, timeout time.Duration) (content string, thinking string, convLimit bool, serverBusy bool, err error) {
+func (h *ChatHandler) waitForResponse(ctx context.Context, timeout time.Duration, question string) (content string, thinking string, convLimit bool, serverBusy bool, err error) {
 	deadline := time.Now().Add(timeout)
 	zeroCharCount := 0
 	totalPolls := 0 // 总轮询次数，不被重置，用于60秒兜底
@@ -1206,16 +1356,8 @@ func (h *ChatHandler) waitForResponse(ctx context.Context, timeout time.Duration
 				if len(rawSSE) > 0 {
 					os.WriteFile(filepath.Join(os.TempDir(), "ds_raw_sse.txt"), []byte(rawSSE), 0644)
 				}
-				c := deduplicateContent(r.C)
-				t := deduplicateContent(r.T)
-				// 兜底：当 content 极短而 thinking 包含大量实质内容时，
-				// 说明 DeepSeek 可能把完整回复放在了 THINK fragment（结构化 JSON 等场景），
-				// 此时将 thinking 合并到 content 作为最终输出
-				if len([]rune(c)) < 50 && len([]rune(t)) > 200 {
-					log.Printf("[chat] thinking>capture: content=%d, thinking=%d, using thinking as content", len([]rune(c)), len([]rune(t)))
-					c = t
-					t = ""
-				}
+				c := deduplicateContent(r.C, question)
+				t := deduplicateContent(r.T, question)
 				return c, t, r.Lim, r.Busy, nil
 			}
 			if !r.D && !r.DD {
@@ -1290,16 +1432,118 @@ func (h *ChatHandler) waitForResponse(ctx context.Context, timeout time.Duration
 	return "", "", false, false, fmt.Errorf("timeout waiting for response after %v", timeout)
 }
 
-func deduplicateContent(content string) string {
+func deduplicateContent(content string, question string) string {
 	if content == "" {
 		return content
 	}
 	lines := strings.Split(content, "\n")
 	if len(lines) <= 1 {
-		return content
+		// 单行场景：检测行内重复（如 "1+1=2 😄1+1=2"）
+		return deduplicateSingleLineRepeat(content, question)
 	}
 	deduped := lineLevelDedup(lines)
+	// 对每一行也应用单行去重（防止单行内重复）
+	for i, line := range deduped {
+		deduped[i] = deduplicateSingleLineRepeat(line, question)
+	}
 	return strings.Join(deduped, "\n")
+}
+
+// isAlnum 判断字符是否为字母、数字或中文
+func isAlnum(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || (r >= 0x4e00 && r <= 0x9fff)
+}
+
+// deduplicateSingleLineRepeat 检测并去除单行内的重复模式
+// 处理三重拦截器（fetch/XHR/EventSource）或 DeepSeek SSE 用不同 p 类型
+// 重复发送同一 content 导致的重复，包括：
+//   - "X 😄X" 模式（X 为相同子串，中间有分隔符）
+//   - "部分 + 完整" 模式（DeepSeek 先发部分内容，再发完整内容，如 "2"+"1+1=2"="21+1=2"）
+//   - "完整 + 部分重复" 模式（DeepSeek 先发完整内容，再发部分内容，如 "1+1=2"+"1+1"="1+1=21+1"）
+//
+// 安全约束：
+//   - 模式0要求 full 长度 >=4，partial 长度 >=2，避免误删短文本
+//   - 模式1要求 rest 不含空格（避免误判 "1+1=2 1+1" 等有效内容）
+//   - 模式2要求子串长度 >=5，避免误删短文本
+func deduplicateSingleLineRepeat(line string, question string) string {
+	runes := []rune(line)
+	n := len(runes)
+
+	// 模式3：剥离问题回显（XHR 拦截器可能将对话标题追加到 capture 末尾）
+	// 场景：capture="42+2"，question="2+2=?"，末尾"2+2"是问题子串，剥离后得到"4"
+	// 安全约束：capture <= 30 字符，问题文本非空，匹配子串 >= 3 字符，剥离后剩余 >= 1 字符
+	// 注：此模式在 n<6 检查之前执行，因为短答案（如"42+2"只有4字符）也需要处理
+	// 匹配使用大小写不敏感，且要求匹配子串在问题中位于词边界（避免"llo"误匹配"hello"的子串）
+	if question != "" && n >= 4 && n <= 30 {
+		lowerQ := strings.ToLower(question)
+		// 从 capture 末尾查找最长的问题子串匹配
+		for matchLen := n - 1; matchLen >= 3; matchLen-- {
+			captureSuffix := string(runes[n-matchLen:])
+			lowerSuffix := strings.ToLower(captureSuffix)
+			idx := strings.Index(lowerQ, lowerSuffix)
+			// 要求匹配子串在问题中位于词边界（开头或前面是空格/标点）
+			if idx >= 0 && (idx == 0 || lowerQ[idx-1] == ' ' || lowerQ[idx-1] == '.' || lowerQ[idx-1] == '?' || lowerQ[idx-1] == '!') {
+				remaining := string(runes[:n-matchLen])
+				if len([]rune(remaining)) >= 1 {
+					return remaining
+				}
+			}
+		}
+	}
+
+	if n < 6 {
+		return line
+	}
+
+	// 模式0：检测"完整 + 完整的前缀"模式（完整内容后跟着部分重复）
+	// 场景：DeepSeek 先发完整内容（如 "1+1=2"），再发部分内容（如 "1+1"）
+	// 拦截器都追加，导致 capture="1+1=21+1"
+	// 安全约束：full 长度 >=4，partial 长度 >=2，full 以 partial 开头
+	//           full 不含空格（避免误判 "1+1=2 1+1" 等含空格内容）
+	//           full 以字母数字开头（避免误判 "=21+1=2" 等"部分+完整"模式）
+	for L := n - 1; L >= n/2 && L >= 4; L-- {
+		full := string(runes[0:L])
+		partial := string(runes[L:])
+		if len([]rune(partial)) >= 2 && strings.HasPrefix(full, partial) &&
+			!strings.Contains(full, " ") && isAlnum(runes[0]) {
+			return full
+		}
+	}
+
+	// 模式1：检测"短前缀 + 完整内容"，其中短前缀是完整内容的末尾部分
+	// 场景：DeepSeek 先发送部分内容（如 "2"），再发送完整内容（如 "1+1=2"）
+	// 拦截器都追加，导致 capture="21+1=2"
+	// 安全约束：前缀长度 1-2，rest 长度 >=4，rest 不含空格，且 rest 以 prefix 结尾
+	for prefixLen := 1; prefixLen <= 2 && prefixLen*2 < n; prefixLen++ {
+		prefix := string(runes[:prefixLen])
+		rest := string(runes[prefixLen:])
+		restRunes := len([]rune(rest))
+		if restRunes >= 4 && !strings.Contains(rest, " ") && strings.HasSuffix(rest, prefix) {
+			return rest
+		}
+	}
+
+	// 模式2：检测"X + 分隔符 + X" 前缀重复（三重拦截器各自捕获同一完整内容）
+	// 安全约束：子串长度 >=5，避免误删短文本
+	if n >= 10 {
+		for sLen := 5; sLen <= n/2; sLen++ {
+			s := string(runes[0:sLen])
+			for sep := 0; sep <= 3 && sLen+sep+sLen <= n; sep++ {
+				secondStart := sLen + sep
+				second := string(runes[secondStart : secondStart+sLen])
+				if s == second {
+					rest := string(runes[secondStart+sLen:])
+					rest = strings.TrimSpace(rest)
+					if rest == "" {
+						return s
+					}
+					return s + " " + rest
+				}
+			}
+		}
+	}
+
+	return line
 }
 
 func lineLevelDedup(lines []string) []string {
@@ -1548,7 +1792,7 @@ func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, t
 		}
 
 		// 等待响应
-		content, thinking, convLimit, serverBusy, err := h.waitForResponse(ctx, h.responseTimeout)
+		content, thinking, convLimit, serverBusy, err := h.waitForResponse(ctx, h.responseTimeout, text)
 		if err != nil {
 			log.Printf("[chat] attempt %d waitForResponse error: %v (content=%d chars)", attempt+1, err, len([]rune(content)))
 			return &ChatResponse{Content: content, Thinking: thinking}, err
@@ -1588,7 +1832,7 @@ func (h *ChatHandler) retryWithNewConversation(ctx context.Context, mode string,
 	if err := h.sendMessageOrUpload(text, files); err != nil {
 		return &ChatResponse{Content: "新开对话后重新发送失败"}, err
 	}
-	content, thinking, convLimit, serverBusy, err := h.waitForResponse(ctx, h.responseTimeout)
+	content, thinking, convLimit, serverBusy, err := h.waitForResponse(ctx, h.responseTimeout, text)
 	if err != nil {
 		return &ChatResponse{Content: content, Thinking: thinking}, err
 	}
