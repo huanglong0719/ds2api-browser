@@ -2,10 +2,13 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -37,6 +40,15 @@ type contentPart struct {
 	ImageURL *struct {
 		URL string `json:"url"`
 	} `json:"image_url,omitempty"`
+	FileURL *struct {
+		URL string `json:"url"`
+	} `json:"file_url,omitempty"`
+	File *struct {
+		URL      string `json:"url,omitempty"`
+		FileData string `json:"file_data,omitempty"`
+		Name     string `json:"name,omitempty"`
+		Filename string `json:"filename,omitempty"`
+	} `json:"file,omitempty"`
 }
 
 func (c *contentParts) UnmarshalJSON(b []byte) error {
@@ -255,14 +267,37 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	text, images := extractContent(req.Messages)
+	fileRefs := extractFileData(req.Messages)
 
-	if len(images) > 0 {
-		log.Printf("[api] image chat request: text=%q, images=%d, msgs=%d", text, len(images), len(req.Messages))
-	} else if text != "" {
-		log.Printf("[api] text chat request: text=%q, msgs=%d", text, len(req.Messages))
-	} else {
+	// 将文件数据保存到临时文件
+	var filePaths []string
+	for _, f := range fileRefs {
+		p, err := saveFileData(f)
+		if err != nil {
+			log.Printf("[api] save file data error: %v", err)
+			continue
+		}
+		filePaths = append(filePaths, p)
+	}
+	// 请求结束后清理临时文件
+	defer func() {
+		for _, p := range filePaths {
+			os.Remove(p)
+		}
+	}()
+
+	hasContent := text != "" || len(images) > 0 || len(filePaths) > 0
+	if !hasContent {
 		writeError(w, 400, "no content found in request")
 		return
+	}
+
+	if len(images) > 0 {
+		log.Printf("[api] image chat request: text=%q, images=%d, files=%d, msgs=%d", text, len(images), len(filePaths), len(req.Messages))
+	} else if len(filePaths) > 0 {
+		log.Printf("[api] file chat request: text=%q, files=%d, msgs=%d", text, len(filePaths), len(req.Messages))
+	} else if text != "" {
+		log.Printf("[api] text chat request: text=%q, msgs=%d", text, len(req.Messages))
 	}
 
 	timeout := time.Duration(h.cfg.ResponseTimeoutSec) * time.Second
@@ -293,10 +328,11 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	t0 := time.Now()
-	if len(images) > 0 {
+	if len(images) > 0 || len(filePaths) > 0 {
 		resp, err = h.chatHandler.SendImageChat(ctx, &browser.ChatRequest{
 			Text:   text,
 			Images: images,
+			Files:  filePaths,
 		}, shouldNewConv)
 	} else {
 		resp, err = h.chatHandler.SendTextChat(ctx, text, shouldNewConv)
@@ -384,6 +420,7 @@ func (h *Handler) writeStreamResponse(w http.ResponseWriter, resp *browser.ChatR
 }
 
 func extractContent(messages []chatMessage) (text string, images []string) {
+	var hasFile bool
 	for i := len(messages) - 1; i >= 0; i-- {
 		msg := messages[i]
 		if msg.Role != "user" {
@@ -399,13 +436,112 @@ func extractContent(messages []chatMessage) (text string, images []string) {
 				if part.ImageURL != nil && part.ImageURL.URL != "" {
 					images = append(images, part.ImageURL.URL)
 				}
+			case "file", "file_url":
+				hasFile = true
 			}
 		}
 	}
 	if text == "" && len(images) > 0 {
 		text = "请识别图片中的内容"
 	}
+	if text == "" && hasFile {
+		text = "请处理附件中的内容"
+	}
 	return text, images
+}
+
+// extractFileData 从消息中提取文件内容（URL 或 base64 数据）
+func extractFileData(messages []chatMessage) []string {
+	var files []string
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role != "user" {
+			continue
+		}
+		for _, part := range msg.Content {
+			switch part.Type {
+			case "file":
+				if part.File != nil {
+					if part.File.FileData != "" {
+						files = append(files, part.File.FileData)
+					} else if part.File.URL != "" {
+						files = append(files, part.File.URL)
+					}
+				}
+			case "file_url":
+				if part.FileURL != nil && part.FileURL.URL != "" {
+					files = append(files, part.FileURL.URL)
+				}
+			}
+		}
+	}
+	return files
+}
+
+// saveFileData 将文件数据（base64 或 data URI）保存到临时文件，返回路径
+func saveFileData(data string) (string, error) {
+	var rawData []byte
+	var ext string
+
+	if strings.HasPrefix(data, "data:") {
+		// data URI 格式: data:application/pdf;base64,xxxx
+		comma := strings.Index(data, ",")
+		if comma >= 0 {
+			mime := data[5:comma]
+			if strings.Contains(mime, "text/plain") || strings.Contains(mime, "text/markdown") {
+				ext = ".txt"
+			} else if strings.Contains(mime, "application/pdf") {
+				ext = ".pdf"
+			} else if strings.Contains(mime, "text/csv") {
+				ext = ".csv"
+			} else if strings.Contains(mime, "text/html") {
+				ext = ".html"
+			} else if strings.Contains(mime, "application/json") {
+				ext = ".json"
+			} else if strings.Contains(mime, "image/") {
+				ext = ".img"
+			} else if strings.Contains(mime, "application/vnd.openxmlformats-officedocument") {
+				if strings.Contains(mime, "wordprocessingml") {
+					ext = ".docx"
+				} else if strings.Contains(mime, "spreadsheetml") {
+					ext = ".xlsx"
+				} else if strings.Contains(mime, "presentationml") {
+					ext = ".pptx"
+				}
+			}
+			if ext == "" {
+				ext = ".bin"
+			}
+			b64 := data[comma+1:]
+			rawData, _ = base64.StdEncoding.DecodeString(b64)
+		}
+	} else if isBase64(data) {
+		rawData, _ = base64.StdEncoding.DecodeString(data)
+		ext = ".txt"
+	} else {
+		// 普通文本内容
+		rawData = []byte(data)
+		ext = ".txt"
+	}
+
+	if len(rawData) == 0 {
+		rawData = []byte(data)
+		ext = ".txt"
+	}
+
+	filePath := filepath.Join(os.TempDir(), fmt.Sprintf("ds_file_%d%s", time.Now().UnixNano(), ext))
+	if err := os.WriteFile(filePath, rawData, 0644); err != nil {
+		return "", err
+	}
+	return filePath, nil
+}
+
+func isBase64(s string) bool {
+	if len(s) < 10 {
+		return false
+	}
+	_, err := base64.StdEncoding.DecodeString(s)
+	return err == nil
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {

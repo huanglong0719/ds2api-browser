@@ -13,6 +13,9 @@
 - **OpenAI 兼容接口** — 标准的 `/v1/chat/completions` 端点，支持第三方客户端直接连接
 - **流式/非流式响应** — 同时支持 `stream: true/false`
 - **并发安全** — 内置互斥锁保护，串行处理请求避免浏览器冲突
+- **长文本自动文件上传** — 超过 3000 字符的文本自动保存为 `.txt` 文件上传，避免 textarea 撑大导致按钮移出视口
+- **文件附件支持** — 客户端可通过 `file` / `file_url` 类型发送文件附件（`.txt` / `.pdf` / `.csv` 等），自动上传到 DeepSeek 输入框
+- **标签页自动清理** — 启动时和每次请求前自动关闭多余标签页，仅保留一个 DeepSeek 聊天页，减少内存占用
 
 ## 快速开始
 
@@ -148,6 +151,38 @@ Authorization: Bearer <api_key>
 }
 ```
 
+### 文件上传请求
+
+支持通过 `file` 或 `file_url` 类型发送文件附件：
+
+```json
+{
+  "model": "deepseek-chat",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "分析这个文件"},
+        {"type": "file_url", "file_url": {"url": "https://example.com/report.pdf"}}
+      ]
+    }
+  ]
+}
+```
+
+也支持 data URI 和 base64 编码的文件数据：
+
+```json
+{
+  "role": "user",
+  "content": [
+    {"type": "file", "file": {"file_data": "data:text/plain;base64,SGVsbG8gV29ybGQ=", "filename": "hello.txt"}}
+  ]
+}
+```
+
+长文本（超过 3000 字符）会自动保存为 `.txt` 文件上传，无需客户端额外操作。
+
 ### 新对话控制
 
 ```bash
@@ -239,11 +274,14 @@ curl http://127.0.0.1:8766/v1/debug
 ## 关键设计原则
 
 1. **标签页复用** — 不为每次请求创建新标签页，通过 CDP Target 跟踪重用现有标签页，实现连续对话。
-2. **智能模式切换** — 根据请求内容自动切换"默认模式"或"识图模式"，无需客户端关心底层细节。
-3. **三段式发送保障** — Enter 键 → JS 事件链点击 → MouseClickXY 坐标点击 → 键盘回车重试，确保消息在各种场景下都能成功发送。
-4. **SSE 三重拦截** — fetch + XHR + EventSource 三通道独立拦截，每个通道均完整支持各种 SSE 包格式（含纯 v 字符串增量包），Go 层通过 `deduplicateContent()` 去重，三重保障响应完整性。
-5. **并发串行化** — 使用 sync.Mutex 保护 ChatHandler，同一时间只处理一个请求，避免浏览器操作冲突。
-6. **超时保护** — 请求级超时由 `response_timeout_sec` 配置（默认 120 秒），防止 Chrome 卡死导致 goroutine 永久阻塞。
+2. **智能模式切换** — 根据请求内容自动切换"默认模式"或"识图模式"，无需客户端关心底层细节。对话进行中 radio 按钮隐藏时，自动通过图片预览元素回退检测当前模式。
+3. **四维发送保障** — 依次尝试 Enter 键 → Ctrl+Enter 组合键 → JS 直接点击 primary 发送按钮 → MouseClickXY 坐标点击 → Submit 表单提交 → 键盘回车回退，确保消息在各种场景下都能成功发送。
+4. **长文本自动文件上传** — 超过 3000 字符的文本自动保存为 `.txt` 文件上传，避免 textarea 撑大导致按钮移出视口（快速模式/识图模式支持文件上传，专家模式暂不支持）。
+5. **文件附件上传** — 客户端 API 请求中的 `file` / `file_url` 类型内容自动提取并上传到 DeepSeek 输入框，支持 data URI / base64 / URL 三种格式。
+6. **标签页自动清理** — 启动时和每次请求前通过 Chrome DevTools Protocol HTTP API 关闭多余标签页（`chrome://newtab/` 等），仅保留一个 DeepSeek 聊天页，减少内存占用。
+7. **SSE 三重拦截** — fetch + XHR + EventSource 三通道独立拦截，每个通道均完整支持各种 SSE 包格式（含纯 v 字符串增量包），Go 层通过 `deduplicateContent()` 去重，三重保障响应完整性。
+8. **并发串行化** — 使用 sync.Mutex 保护 ChatHandler，同一时间只处理一个请求，避免浏览器操作冲突。
+9. **超时保护** — 请求级超时由 `response_timeout_sec` 配置（默认 120 秒），防止 Chrome 卡死导致 goroutine 永久阻塞。
 
 ## 数据流架构
 
@@ -265,7 +303,7 @@ curl http://127.0.0.1:8766/v1/debug
 │  ├── sendChat(mode)         │ ← 文本/图片统一入口
 │  │   ├── switchTo*Mode()   │ ← 模式切换
 │  │   ├── injectInterceptor()│ ← 注入 SSE 拦截器
-│  │   ├── sendMessage()      │ ← 清空→输入→Enter→重试
+│  │   ├── sendMessage()      │ ← 清空→输入→多方式发送→重试
 │  │   ├── waitForResponse()  │ ← 轮询 __dsBrowserCapture
 │  │   └── deduplicateContent()│ ← 三重拦截去重
 │  └── NewConversation()     │ ← UI 点击或 Ctrl+J
@@ -294,7 +332,7 @@ ds2api-browser/
 │   └── handler_test.go        # API 单元测试（extractContent、writeError 等）
 ├── browser/
 │   ├── session.go             # Chrome 进程管理、CDP 连接、登录、导航、目标跟踪
-│   ├── chat.go                # 聊天核心：模式切换、消息输入、三段发送、响应等待
+│   ├── chat.go                # 聊天核心：模式切换、消息输入、多方式发送、响应等待、重试机制
 │   ├── chat_test.go           # 聊天核心单元测试（去重、错误检测等）
 │   └── injector.go            # JavaScript 拦截器：SSE/EventSource/DOM 观察器注入
 ├── config/

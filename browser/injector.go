@@ -284,6 +284,8 @@ if (OrigES) {
 						var lastFrag = d.v[d.v.length - 1];
 						if (lastFrag && lastFrag.type) {
 							window.__dsCurrentFragmentType = lastFrag.type;
+							window.__dsBrowserLog.push('FRAG_TYPE:' + lastFrag.type);
+							if (window.__dsBrowserLog.length > 200) window.__dsBrowserLog.shift();
 						}
 					} else if (d.p && d.p.indexOf('response/fragments/') === 0 && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
 						if (window.__dsCurrentFragmentType === 'THINK' || window.__dsCurrentFragmentType === 'THINKING') {

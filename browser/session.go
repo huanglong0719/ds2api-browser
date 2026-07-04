@@ -120,17 +120,16 @@ func (s *Session) initContexts() error {
 	// 强制设置浏览器窗口大小（覆盖 Chrome 记忆的上次窗口状态）
 	s.setWindowSize(900, 600)
 
-	// 关闭 Chrome session restore 自动恢复的多余 DeepSeek 标签页
-	// 根因：findDeepSeekTarget() 可能在 session restore 完成前执行，
-	// 导致创建新标签页的同时 session restore 又恢复出旧标签页
-	s.closeExtraDeepSeekTargets()
+	// 关闭多余的标签页（保留当前 DeepSeek 页，关闭其他所有页面标签）
+	s.closeExtraTargets()
 
 	return nil
 }
 
-// closeExtraDeepSeekTargets 关闭多余的 DeepSeek 标签页（保留当前正在使用的）
-// 解决 Chrome session restore 自动恢复历史标签页导致出现多个 DeepSeek 页面的问题
-func (s *Session) closeExtraDeepSeekTargets() {
+// closeExtraTargets 关闭多余的标签页（保留当前正在使用的 DeepSeek 页，关闭其他所有页面标签）
+// 解决多标签页导致的操作目标混乱问题
+// 使用 Chrome DevTools Protocol HTTP API 而非 chromedp.Targets（后者常因 context 未就绪而失败）
+func (s *Session) closeExtraTargets() {
 	currentTargetID := target.ID("")
 	if s.browserCtx != nil {
 		if id := chromedp.FromContext(s.browserCtx); id != nil && id.Target != nil {
@@ -141,35 +140,52 @@ func (s *Session) closeExtraDeepSeekTargets() {
 		return
 	}
 
-	infos, err := chromedp.Targets(s.allocCtx)
+	// 通过 HTTP API 获取所有标签页，避免 chromedp.Targets 的 context 有效性依赖
+	apiURL := fmt.Sprintf("http://127.0.0.1:%d/json", s.port)
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	resp, err := httpClient.Get(apiURL)
 	if err != nil {
-		log.Printf("[session] closeExtraTargets: list targets failed: %v (skip, non-critical)", err)
+		log.Printf("[session] closeExtraTargets: http get failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	var targets []struct {
+		ID   string `json:"id"`
+		Type string `json:"type"`
+		URL  string `json:"url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&targets); err != nil {
+		log.Printf("[session] closeExtraTargets: decode failed: %v", err)
 		return
 	}
 
 	closed := 0
-	for _, info := range infos {
-		if info.Type != "page" {
+	for _, t := range targets {
+		if t.Type != "page" {
 			continue
 		}
-		if !strings.Contains(info.URL, "chat.deepseek.com") {
+		if target.ID(t.ID) == currentTargetID {
 			continue
 		}
-		if info.TargetID == currentTargetID {
+		// 通过 HTTP API 关闭标签页
+		closeURL := fmt.Sprintf("http://127.0.0.1:%d/json/close/%s", s.port, t.ID)
+		closeResp, closeErr := httpClient.Get(closeURL)
+		if closeErr != nil {
+			log.Printf("[session] closeExtraTargets: close %s failed: %v", t.ID, closeErr)
 			continue
 		}
-		err := chromedp.Run(s.allocCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-			return target.CloseTarget(info.TargetID).Do(ctx)
-		}))
-		if err != nil {
-			log.Printf("[session] closeExtraTargets: close %s failed: %v", info.TargetID, err)
+		closeResp.Body.Close()
+
+		closed++
+		if strings.Contains(t.URL, "chat.deepseek.com") {
+			log.Printf("[session] closed extra DeepSeek tab: %s (url=%s)", t.ID, t.URL)
 		} else {
-			closed++
-			log.Printf("[session] closed extra DeepSeek target: %s (url=%s)", info.TargetID, info.URL)
+			log.Printf("[session] closed non-DeepSeek tab: %s (url=%s)", t.ID, t.URL)
 		}
 	}
 	if closed > 0 {
-		log.Printf("[session] closed %d extra DeepSeek tab(s)", closed)
+		log.Printf("[session] closed %d extra tab(s) total", closed)
 	}
 }
 
@@ -209,10 +225,9 @@ func (s *Session) setWindowSize(width, height int) {
 	}
 }
 
-func (s *Session) resetCtx() {
-	s.ctxMu.Lock()
-	defer s.ctxMu.Unlock()
-
+// resetCtxLocked 在已持有 ctxMu 锁的前提下重置浏览器上下文。
+// 调用方必须先获取 s.ctxMu 锁。
+func (s *Session) resetCtxLocked() {
 	if s.browserCancel != nil {
 		s.browserCancel()
 	}
@@ -239,21 +254,28 @@ func (s *Session) resetCtx() {
 	s.setWindowSize(900, 600)
 }
 
+// resetCtx 重置浏览器上下文（内部自动加锁）。
+func (s *Session) resetCtx() {
+	s.ctxMu.Lock()
+	defer s.ctxMu.Unlock()
+	s.resetCtxLocked()
+}
+
 func (s *Session) Context() context.Context {
 	s.ctxMu.Lock()
+	defer s.ctxMu.Unlock()
 	if s.browserCtx != nil && s.browserCtx.Err() == nil {
-		ctx := s.browserCtx
-		s.ctxMu.Unlock()
-		return ctx
+		return s.browserCtx
 	}
-	s.ctxMu.Unlock()
+	s.resetCtxLocked()
+	return s.browserCtx
+}
 
-	s.resetCtx()
-
-	s.ctxMu.Lock()
-	ctx := s.browserCtx
-	s.ctxMu.Unlock()
-	return ctx
+// advanceAccountIdx 前进账号索引，用于切换失败时跳过当前账号。
+func (s *Session) advanceAccountIdx() {
+	if len(s.cfg.Accounts) > 0 {
+		s.currentAccountIdx = (s.currentAccountIdx + 1) % len(s.cfg.Accounts)
+	}
 }
 
 func (s *Session) findDeepSeekTarget() target.ID {

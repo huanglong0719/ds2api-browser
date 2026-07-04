@@ -17,16 +17,17 @@ import (
 )
 
 const (
-	clickDelay       = 300 * time.Millisecond
-	typeDelay        = 50 * time.Millisecond
-	enterDelay       = 200 * time.Millisecond
-	uploadDelay      = 500 * time.Millisecond
-	previewCheck     = 300 * time.Millisecond
-	modeSwitchDelay  = 800 * time.Millisecond
-	newConvDelay     = 1500 * time.Millisecond
-	pollInterval     = 300 * time.Millisecond
-	maxTextChunk     = 3000
-	requestBodyLimit = 10 << 20
+	clickDelay          = 300 * time.Millisecond
+	typeDelay           = 50 * time.Millisecond
+	enterDelay          = 200 * time.Millisecond
+	uploadDelay         = 500 * time.Millisecond
+	previewCheck        = 300 * time.Millisecond
+	modeSwitchDelay     = 800 * time.Millisecond
+	newConvDelay        = 1500 * time.Millisecond
+	pollInterval        = 300 * time.Millisecond
+	maxTextChunk        = 3000
+	fileUploadThreshold = 3000
+	requestBodyLimit    = 10 << 20
 )
 
 // errorDetectJS 统一的 DOM 错误检测 JS，被 waitForResponse 和 detectImmediateError 共用
@@ -105,6 +106,9 @@ var observeCaptureScript = `
 (() => {
 	window.__dsBrowserDOMDone = false;
 	window.__dsObserveActive = true;
+	if (window.__dsObserveInterval) {
+		clearInterval(window.__dsObserveInterval);
+	}
 	let lastText = '';
 	let unchangedCount = 0;
 
@@ -123,7 +127,7 @@ var observeCaptureScript = `
 			window.__dsBrowserDOMDone = true;
 		}
 	}
-	setInterval(scan, 500);
+	window.__dsObserveInterval = setInterval(scan, 500);
 	scan();
 })();
 `
@@ -138,6 +142,7 @@ type ChatHandler struct {
 type ChatRequest struct {
 	Text   string   `json:"text"`
 	Images []string `json:"images"`
+	Files  []string `json:"files"`
 	Model  string   `json:"model,omitempty"`
 }
 
@@ -163,17 +168,17 @@ func (h *ChatHandler) SendTextChat(ctx context.Context, text string, shouldNewCo
 	if text == "" {
 		return nil, fmt.Errorf("empty text message")
 	}
-	return h.sendChat(ctx, "text", text, nil, shouldNewConv)
+	return h.sendChat(ctx, "text", text, nil, nil, shouldNewConv)
 }
 
 func (h *ChatHandler) SendImageChat(ctx context.Context, req *ChatRequest, shouldNewConv bool) (*ChatResponse, error) {
-	if len(req.Images) == 0 {
-		return nil, fmt.Errorf("no images provided for image chat")
+	if len(req.Images) == 0 && len(req.Files) == 0 {
+		return nil, fmt.Errorf("no images or files provided")
 	}
-	return h.sendChat(ctx, "image", req.Text, req.Images, shouldNewConv)
+	return h.sendChat(ctx, "image", req.Text, req.Images, req.Files, shouldNewConv)
 }
 
-func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, images []string, shouldNewConv bool) (*ChatResponse, error) {
+func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, images []string, files []string, shouldNewConv bool) (*ChatResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -214,8 +219,109 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 		step("uploadImage")
 	}
 
-	if err := h.sendMessage(text); err != nil {
-		return nil, fmt.Errorf("send message: %w", err)
+	// 统一文件上传：收集客户端文件 + 长文本（转为文件）
+	type fileItem struct {
+		path string
+		tmp  bool // 是否临时文件，需在流程结束时清理
+	}
+	var allFiles []fileItem
+
+	// 客户端传的文件（路径已在 handler 中生成）
+	for _, f := range files {
+		allFiles = append(allFiles, fileItem{path: f})
+	}
+
+	// 长文本（超过阈值）转为文件，避免 textarea 撑大导致按钮不可见
+	textRunes := len([]rune(text))
+	needTextFile := textRunes > fileUploadThreshold && mode != "image"
+	if needTextFile {
+		log.Printf("[chat] text too long (%d chars), saving as file", textRunes)
+		tmpPath := filepath.Join(os.TempDir(), fmt.Sprintf("ds_message_%d.txt", time.Now().UnixNano()))
+		if err := os.WriteFile(tmpPath, []byte(text), 0644); err != nil {
+			return nil, fmt.Errorf("write text file: %w", err)
+		}
+		defer os.Remove(tmpPath)
+		allFiles = append(allFiles, fileItem{path: tmpPath, tmp: true})
+	}
+
+	// 上传所有收集到的文件（一次 SetUploadFiles 调用，不互相覆盖）
+	if len(allFiles) > 0 {
+		paths := make([]string, len(allFiles))
+		for i, f := range allFiles {
+			paths[i] = f.path
+		}
+		log.Printf("[chat] uploading %d file(s) to DeepSeek", len(paths))
+		if err := chromedp.Run(h.session.Context(),
+			chromedp.SetUploadFiles(`input[type="file"]`, paths, chromedp.ByQuery),
+		); err != nil {
+			return nil, fmt.Errorf("upload files: %w", err)
+		}
+		log.Println("[chat] files uploaded, waiting for processing...")
+		time.Sleep(1 * time.Second)
+		step("uploadFiles")
+
+		// 文件上传后立即检查页面是否有服务器繁忙等错误提示
+		var uploadErr string
+		chromedp.Run(h.session.Context(),
+			chromedp.Evaluate(errorDetectJS, &uploadErr),
+		)
+		if strings.HasPrefix(uploadErr, "serverBusy:") {
+			log.Printf("[chat] server busy during file upload: %s", uploadErr)
+			return h.retryWithAccountSwitch(ctx, mode, text, images, files)
+		}
+		if strings.HasPrefix(uploadErr, "convLimit:") {
+			log.Printf("[chat] conv limit during file upload: %s", uploadErr)
+			return h.retryWithNewConversation(ctx, mode, text, images, files)
+		}
+
+		// 输入提示文字并发送（保持 textarea 短小让按钮可见）
+		prompt := text
+		if needTextFile {
+			prompt = "请处理附件中的内容"
+		}
+		if prompt == "" {
+			prompt = "请处理附件中的内容"
+		}
+		if err := h.clearTextarea(); err != nil {
+			return nil, fmt.Errorf("clear textarea: %w", err)
+		}
+		if err := h.typeText(prompt); err != nil {
+			return nil, fmt.Errorf("type prompt: %w", err)
+		}
+		stillInBox, err := h.pressEnter()
+		if err != nil {
+			return nil, fmt.Errorf("press enter: %w", err)
+		}
+		if stillInBox {
+			// 发送可能被页面错误遮挡，先检查错误再做兜底点击
+			errType, errMsg := h.detectImmediateError()
+			if errType == "serverBusy" {
+				log.Printf("[chat] detected %s after file upload: %s", errType, errMsg)
+				return h.retryWithAccountSwitch(ctx, mode, text, images, files)
+			}
+			if errType == "convLimit" {
+				log.Printf("[chat] detected %s after file upload: %s", errType, errMsg)
+				return h.retryWithNewConversation(ctx, mode, text, images, files)
+			}
+			// 兜底点击发送（可能页面只是卡顿，没有错误提示）
+			if err := h.ensureMessageSent(); err != nil {
+				return nil, err
+			}
+			// 兜底成功，继续走正常等待响应流程
+		}
+	} else {
+		// 无文件，直接输入文本
+		if err := h.sendMessage(text); err != nil {
+			log.Printf("[chat] sendMessage failed: %v, navigating home and retrying once", err)
+			h.session.NavigateHome(ctx)
+			time.Sleep(2 * time.Second)
+			if err2 := h.switchMode(ctx, mode); err2 != nil {
+				return nil, fmt.Errorf("send message: %w", err)
+			}
+			if err2 := h.sendMessage(text); err2 != nil {
+				return nil, fmt.Errorf("send message: %w", err2)
+			}
+		}
 	}
 	step("sendMessage")
 
@@ -223,9 +329,9 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 	if errType != "" {
 		log.Printf("[chat] detected %s immediately after send: %s", errType, errMsg)
 		if errType == "serverBusy" {
-			return h.retryWithAccountSwitch(ctx, mode, text, images)
+			return h.retryWithAccountSwitch(ctx, mode, text, images, files)
 		}
-		return h.retryWithNewConversation(ctx, mode, text, images)
+		return h.retryWithNewConversation(ctx, mode, text, images, files)
 	}
 	step("immediateErrorDetection")
 
@@ -238,13 +344,13 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 	// 检测服务器繁忙/消息过于频繁，切换账号并重试（优先级高于对话长度上限）
 	if serverBusy || hasServerBusy(content) {
 		log.Println("[chat] server busy detected, switching account and retrying...")
-		return h.retryWithAccountSwitch(ctx, mode, text, images)
+		return h.retryWithAccountSwitch(ctx, mode, text, images, files)
 	}
 
 	// 检测对话长度上限，自动开启新对话并重试
 	if convLimit || hasConvLimit(content) {
 		log.Println("[chat] conversation limit detected, starting new conversation and retrying...")
-		return h.retryWithNewConversation(ctx, mode, text, images)
+		return h.retryWithNewConversation(ctx, mode, text, images, files)
 	}
 
 	log.Printf("[chat] got response: %d chars, thinking: %d chars", len([]rune(content)), len([]rune(thinking)))
@@ -264,6 +370,8 @@ func (h *ChatHandler) ensureReady() error {
 	if !h.session.loggedIn {
 		return fmt.Errorf("not logged in")
 	}
+	// 每次发送前清理多余标签页，确保只有一个 DeepSeek 页
+	h.session.closeExtraTargets()
 	if err := h.session.ensureOnDeepSeek(h.session.Context()); err != nil {
 		return fmt.Errorf("navigate to DeepSeek: %w", err)
 	}
@@ -278,18 +386,54 @@ func (h *ChatHandler) ensureReady() error {
 	return nil
 }
 
+// getDirectText 获取元素直接文本节点内容（排除子元素嵌套文本），避免 radio button 文本重复问题
+const getDirectText = `(el) => {
+	let txt = '';
+	for (const n of el.childNodes) {
+		if (n.nodeType === 3) txt += n.textContent;
+	}
+	return txt.trim();
+}`
+
+// getCurrentModeFromRadio 获取当前选中 radio 的文本，先尝试直接文本节点，回退到 textContent 并去重
+const getCurrentModeJS = `(()=>{
+	const radios = document.querySelectorAll('[role="radiogroup"] [role="radio"]');
+	if (radios.length === 0) {
+		// 回退方案：查找所有 role=radio
+		const allRadios = document.querySelectorAll('[role="radio"]');
+		for (const r of allRadios) {
+			if (r.getAttribute('aria-checked') === 'true') {
+				let txt = '';
+				for (const n of r.childNodes) {
+					if (n.nodeType === 3) txt += n.textContent;
+				}
+				return txt.trim() || (r.textContent || '').trim().replace(/(识图模式)+/g, '识图模式').replace(/(默认模式)+/g, '默认模式').replace(/(快速模式)+/g, '快速模式');
+			}
+		}
+		// 回退：没找到 radio，检查是否有实际已上传的图片预览（对话进行中 radio 可能被隐藏）
+		// 注意：input[type="file"] 在所有模式中都存在（附件按钮），不能作为识图模式的依据
+		const previewImgs = document.querySelectorAll('img[src*="blob:"], img[src*="data:"]');
+		if (previewImgs.length > 0) {
+			return '识图模式'; // 有图片预览，说明处于识图模式且有已上传图片
+		}
+		return '';
+	}
+	for (const r of radios) {
+		if (r.getAttribute('aria-checked') === 'true') {
+			let txt = '';
+			for (const n of r.childNodes) {
+				if (n.nodeType === 3) txt += n.textContent;
+			}
+			return txt.trim() || (r.textContent || '').trim().replace(/(识图模式)+/g, '识图模式').replace(/(默认模式)+/g, '默认模式').replace(/(快速模式)+/g, '快速模式');
+		}
+	}
+	return '';
+})()`
+
 func (h *ChatHandler) switchToTextMode(ctx context.Context) error {
 	var currentMode string
 	if err := chromedp.Run(h.session.Context(),
-		chromedp.Evaluate(`(()=>{
-			const radios = document.querySelectorAll('[role="radio"]');
-			for (const r of radios) {
-				if (r.getAttribute('aria-checked') === 'true') {
-					return (r.textContent || '').trim();
-				}
-			}
-			return '';
-		})()`, &currentMode),
+		chromedp.Evaluate(getCurrentModeJS, &currentMode),
 	); err != nil {
 		log.Printf("[chat] detect text mode error: %v", err)
 	}
@@ -302,15 +446,40 @@ func (h *ChatHandler) switchToTextMode(ctx context.Context) error {
 	var clickResult string
 	err := chromedp.Run(h.session.Context(),
 		chromedp.Evaluate(`(()=>{
-			const radios = document.querySelectorAll('[role="radio"]');
+			// 先找 radiogroup 内的 radio
+			let radios = document.querySelectorAll('[role="radiogroup"] [role="radio"]');
+			if (radios.length === 0) {
+				radios = document.querySelectorAll('[role="radio"]');
+			}
 			for (const r of radios) {
-				const txt = (r.textContent || '').trim();
-				if (txt !== '识图模式' && !txt.includes('识图')) {
+				let txt = '';
+				for (const n of r.childNodes) {
+					if (n.nodeType === 3) txt += n.textContent;
+				}
+				txt = txt.trim();
+				if (!txt) txt = (r.textContent || '').trim();
+				// 跳过任何包含 识图 的选项
+				if (!txt.includes('识图')) {
 					r.click();
 					return 'clicked:' + txt;
 				}
 			}
-			return 'not_found';
+			// 没找到非识图选项，尝试查找包含 '识图' 的并取消选中
+			for (const r of radios) {
+				let txt = '';
+				for (const n of r.childNodes) {
+					if (n.nodeType === 3) txt += n.textContent;
+				}
+				txt = txt.trim();
+				if (!txt) txt = (r.textContent || '').trim();
+				if (txt.includes('识图') && r.getAttribute('aria-checked') === 'true') {
+					// 试图取消选中 - 点击当前选中的识图模式
+					// 某些 UI 点击已选中的 radio 会取消
+					r.click();
+					return 'attempt_uncheck:' + txt;
+				}
+			}
+			return 'not_found:' + radios.length + ' radios';
 		})()`, &clickResult),
 		chromedp.Sleep(clickDelay),
 	)
@@ -333,15 +502,7 @@ func (h *ChatHandler) switchToImageMode(ctx context.Context) error {
 func (h *ChatHandler) switchToImageModeDepth(ctx context.Context, depth int) error {
 	var currentMode string
 	if err := chromedp.Run(h.session.Context(),
-		chromedp.Evaluate(`(()=>{
-			const radios = document.querySelectorAll('[role="radio"]');
-			for (const r of radios) {
-				if (r.getAttribute('aria-checked') === 'true') {
-					return (r.textContent || '').trim();
-				}
-			}
-			return '';
-		})()`, &currentMode),
+		chromedp.Evaluate(getCurrentModeJS, &currentMode),
 	); err != nil {
 		log.Printf("[chat] detect image mode error: %v", err)
 	}
@@ -358,16 +519,30 @@ func (h *ChatHandler) switchToImageModeDepth(ctx context.Context, depth int) err
 	var clickResult string
 	err := chromedp.Run(h.session.Context(),
 		chromedp.Evaluate(`(()=>{
-			const radios = document.querySelectorAll('[role="radio"]');
+			// 先找 radiogroup 内的 radio
+			let radios = document.querySelectorAll('[role="radiogroup"] [role="radio"]');
+			if (radios.length === 0) {
+				radios = document.querySelectorAll('[role="radio"]');
+			}
+			// 获取元素的直接文本（排除子元素嵌套文本）
+			function getDirectText(el) {
+				let txt = '';
+				for (const n of el.childNodes) {
+					if (n.nodeType === 3) txt += n.textContent;
+				}
+				return txt.trim();
+			}
 			for (const r of radios) {
-				const txt = (r.textContent || '').trim();
+				let txt = getDirectText(r);
+				if (!txt) txt = (r.textContent || '').trim().replace(/(识图模式)+/g, '识图模式').replace(/(默认模式)+/g, '默认模式');
 				if (txt === '识图模式') {
 					r.click();
 					return 'clicked';
 				}
 			}
 			for (const r of radios) {
-				const txt = (r.textContent || '').trim();
+				let txt = getDirectText(r);
+				if (!txt) txt = (r.textContent || '').trim().replace(/(识图模式)+/g, '识图模式').replace(/(默认模式)+/g, '默认模式');
 				if (txt.includes('识图')) {
 					r.click();
 					return 'clicked_partial:' + txt;
@@ -395,15 +570,7 @@ func (h *ChatHandler) switchToImageModeDepth(ctx context.Context, depth int) err
 	}
 
 	if err := chromedp.Run(h.session.Context(),
-		chromedp.Evaluate(`(()=>{
-			const radios = document.querySelectorAll('[role="radio"]');
-			for (const r of radios) {
-				if (r.getAttribute('aria-checked') === 'true') {
-					return (r.textContent || '').trim();
-				}
-			}
-			return '';
-		})()`, &currentMode),
+		chromedp.Evaluate(getCurrentModeJS, &currentMode),
 	); err != nil {
 		log.Printf("[chat] detect image mode error: %v", err)
 	}
@@ -411,7 +578,15 @@ func (h *ChatHandler) switchToImageModeDepth(ctx context.Context, depth int) err
 	log.Printf("[chat] after click, mode: %q", currentMode)
 
 	if !strings.Contains(currentMode, "识图") {
-		return fmt.Errorf("failed to switch to image mode, current=%q", currentMode)
+		// 尝试额外等一秒再检查
+		time.Sleep(1 * time.Second)
+		chromedp.Run(h.session.Context(),
+			chromedp.Evaluate(getCurrentModeJS, &currentMode),
+		)
+		log.Printf("[chat] after extra wait, mode: %q", currentMode)
+		if !strings.Contains(currentMode, "识图") {
+			return fmt.Errorf("failed to switch to image mode, current=%q", currentMode)
+		}
 	}
 
 	log.Println("[chat] switched to image mode")
@@ -476,6 +651,45 @@ func (h *ChatHandler) uploadImage(filePath string) error {
 	return nil
 }
 
+// uploadTextFile 将长文本保存为临时文件并上传，避免 textarea 撑大导致发送按钮不可见
+func (h *ChatHandler) uploadTextFile(text string) error {
+	tmpDir := os.TempDir()
+	filePath := filepath.Join(tmpDir, fmt.Sprintf("ds_message_%d.txt", time.Now().UnixNano()))
+	if err := os.WriteFile(filePath, []byte(text), 0644); err != nil {
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	defer os.Remove(filePath)
+
+	log.Printf("[chat] uploading text file (%d chars)", len([]rune(text)))
+
+	if err := chromedp.Run(h.session.Context(),
+		chromedp.SetUploadFiles(`input[type="file"]`, []string{filePath}, chromedp.ByQuery),
+	); err != nil {
+		return fmt.Errorf("set upload file: %w", err)
+	}
+
+	log.Println("[chat] waiting for file upload...")
+	time.Sleep(1 * time.Second)
+
+	// 输入简短提示并发送，保持 textarea 短小让按钮可见
+	prompt := "请处理附件中的内容"
+	if err := h.clearTextarea(); err != nil {
+		return fmt.Errorf("clear textarea for prompt: %w", err)
+	}
+	if err := h.typeText(prompt); err != nil {
+		return fmt.Errorf("type prompt: %w", err)
+	}
+
+	stillInBox, err := h.pressEnter()
+	if err != nil {
+		return fmt.Errorf("press enter after file upload: %w", err)
+	}
+	if stillInBox {
+		return h.ensureMessageSent()
+	}
+	return nil
+}
+
 func (h *ChatHandler) injectInterceptor() error {
 	// 检查页面中是否实际存在拦截器（页面重载后会丢失）
 	var injected bool
@@ -524,6 +738,60 @@ func (h *ChatHandler) sendMessage(text string) error {
 		return h.ensureMessageSent()
 	}
 	return nil
+}
+
+// sendMessageOrUpload 根据文本长度自动选择 typing 或文件上传（供重试路径使用，支持已有附件）
+func (h *ChatHandler) sendMessageOrUpload(text string, files []string) error {
+	// 合并可能的长文本文件与已有附件
+	var paths []string
+	if len(files) > 0 {
+		paths = make([]string, len(files))
+		copy(paths, files)
+	}
+	if len([]rune(text)) > fileUploadThreshold {
+		tmpPath := filepath.Join(os.TempDir(), fmt.Sprintf("ds_message_%d.txt", time.Now().UnixNano()))
+		if err := os.WriteFile(tmpPath, []byte(text), 0644); err != nil {
+			return fmt.Errorf("write temp text: %w", err)
+		}
+		defer os.Remove(tmpPath)
+		paths = append(paths, tmpPath)
+	}
+
+	// 有附件需要上传时，统一 SetUploadFiles 后再发送提示文字
+	if len(paths) > 0 {
+		log.Printf("[chat] retry uploading %d file(s)", len(paths))
+		if err := chromedp.Run(h.session.Context(),
+			chromedp.SetUploadFiles(`input[type="file"]`, paths, chromedp.ByQuery),
+		); err != nil {
+			return fmt.Errorf("upload files: %w", err)
+		}
+		time.Sleep(1 * time.Second)
+
+		prompt := text
+		if len([]rune(text)) > fileUploadThreshold {
+			prompt = "请处理附件中的内容"
+		}
+		if prompt == "" {
+			prompt = "请处理附件中的内容"
+		}
+		if err := h.clearTextarea(); err != nil {
+			return fmt.Errorf("clear textarea: %w", err)
+		}
+		if err := h.typeText(prompt); err != nil {
+			return fmt.Errorf("type prompt: %w", err)
+		}
+		stillInBox, err := h.pressEnter()
+		if err != nil {
+			return fmt.Errorf("press enter: %w", err)
+		}
+		if stillInBox {
+			return h.ensureMessageSent()
+		}
+		return nil
+	}
+
+	// 无任何附件，直接输入文本
+	return h.sendMessage(text)
 }
 
 func (h *ChatHandler) clearTextarea() error {
@@ -589,9 +857,9 @@ func (h *ChatHandler) pressEnter() (bool, error) {
 		chromedp.SendKeys("textarea", "\r", chromedp.ByQuery),
 	)
 	if err != nil {
-		log.Printf("[chat] Enter key: %v", err)
+		log.Printf("[chat] Enter key error: %v", err)
 	}
-	for range 10 {
+	for i := range 10 {
 		time.Sleep(100 * time.Millisecond)
 		var stillInBox bool
 		chromedp.Run(h.session.Context(),
@@ -601,20 +869,141 @@ func (h *ChatHandler) pressEnter() (bool, error) {
 			})()`, &stillInBox),
 		)
 		if !stillInBox {
+			log.Printf("[chat] pressEnter cleared after %d checks", i+1)
 			return false, nil
 		}
 	}
+	// Enter 无效，尝试 Ctrl+Enter（DeepSeek 某些模式使用组合键发送）
+	log.Println("[chat] pressEnter: Enter failed, trying Ctrl+Enter...")
+	chromedp.Run(h.session.Context(),
+		chromedp.Evaluate(`(()=>{
+			const ta = document.querySelector('textarea');
+			if (!ta) return;
+			ta.focus();
+			ta.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', ctrlKey:true, bubbles:true}));
+			ta.dispatchEvent(new KeyboardEvent('keyup', {key:'Enter', code:'Enter', ctrlKey:true, bubbles:true}));
+		})()`, nil),
+	)
+	time.Sleep(300 * time.Millisecond)
+
+	var stillInBox bool
+	chromedp.Run(h.session.Context(),
+		chromedp.Evaluate(`(()=>{
+			const ta = document.querySelector('textarea');
+			return ta && ta.value && ta.value.trim().length > 0;
+		})()`, &stillInBox),
+	)
+	if !stillInBox {
+		log.Println("[chat] pressEnter: Ctrl+Enter succeeded")
+		return false, nil
+	}
+
+	var taValue string
+	chromedp.Run(h.session.Context(),
+		chromedp.Evaluate(`(document.querySelector('textarea')||{}).value||''`, &taValue),
+	)
+
+	// 页面状态诊断
+	var pageDiag string
+	chromedp.Run(h.session.Context(),
+		chromedp.Evaluate(`(()=>{
+			const ta = document.querySelector('textarea');
+			const allBtns = document.querySelectorAll('button, [role="button"]');
+			let btnInfo = [];
+			for (const b of allBtns) {
+				const r = b.getBoundingClientRect();
+				if (r.width > 0 && r.height > 0 && Math.abs(r.y + r.height/2 - (ta?ta.getBoundingClientRect().bottom:0)) < 100) {
+					btnInfo.push({
+						cls: (b.className||'').substring(0,40),
+						x: Math.round(r.x + r.width/2),
+						y: Math.round(r.y + r.height/2),
+						text: (b.textContent||'').trim().substring(0,15)
+					});
+				}
+			}
+			return JSON.stringify({
+				taValue: ta ? (ta.value||'').substring(0,30) : 'no_ta',
+				taDisabled: ta ? ta.disabled : true,
+				nearbyBtns: btnInfo
+			});
+		})()`, &pageDiag),
+	)
+	log.Printf("[chat] pressEnter: all methods failed, value=%q, diag=%s", taValue[:min(len(taValue), 50)], pageDiag)
 	return true, nil
 }
 
 func (h *ChatHandler) ensureMessageSent() error {
+	// 优先用 JS 直接查找 primary 按钮并点击（更精确）
+	var jsClickedStr string
+	chromedp.Run(h.session.Context(),
+		chromedp.Evaluate(`(()=>{
+			// 先找 ds-button--primary（DeepSeek 的发送按钮）
+			let btns = document.querySelectorAll('.ds-button--primary, [class*="primary"][class*="send"], button[aria-label*="send"], button[aria-label*="发送"]');
+			if (btns.length === 0) {
+				// 回退：找 input 区附近最右按钮
+				const ta = document.querySelector('textarea');
+				if (!ta) return 'no_textarea';
+				const taBottom = ta.getBoundingClientRect().bottom;
+				btns = document.querySelectorAll('button, [role="button"]');
+				let rightmostBtn = null, rightmostX = -1;
+				for (const b of btns) {
+					const r = b.getBoundingClientRect();
+					if (r.width === 0 || r.height === 0) continue;
+					if (Math.abs(r.y + r.height/2 - taBottom) >= 80) continue;
+					if (r.x + r.width/2 > rightmostX) {
+						rightmostX = r.x + r.width/2;
+						rightmostBtn = b;
+					}
+				}
+				if (rightmostBtn) {
+					btns = [rightmostBtn];
+				} else {
+					return JSON.stringify({found:false, reason:'no_nearby_btn'});
+				}
+			}
+			// 尝试点击找到的按钮
+			for (const b of btns) {
+				const r = b.getBoundingClientRect();
+				if (r.width === 0 || r.height === 0) continue;
+				if ((b.disabled === true || b.getAttribute('aria-disabled') === 'true')) {
+					continue; // 跳过禁用按钮
+				}
+				b.focus();
+				b.click();
+				b.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true}));
+				b.dispatchEvent(new MouseEvent('mouseup', {bubbles: true, cancelable: true}));
+				b.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
+				return JSON.stringify({
+					found: true,
+					x: Math.round(r.x + r.width/2),
+					y: Math.round(r.y + r.height/2),
+					tag: b.tagName,
+					cls: (b.getAttribute('class')||'').substring(0,50),
+					disabled: b.disabled === true || b.getAttribute('aria-disabled') === 'true'
+				});
+			}
+			return JSON.stringify({found:false, reason:'all_btns_disabled'});
+		})()`, &jsClickedStr),
+	)
+	if strings.Contains(jsClickedStr, `"found":true`) {
+		log.Printf("[chat] ensureMessageSent: JS click result: %s", jsClickedStr)
+		time.Sleep(clickDelay)
+		if !h.isTextareaStillFilled() {
+			log.Println("[chat] ensureMessageSent: JS direct click succeeded")
+			return nil
+		}
+		log.Println("[chat] ensureMessageSent: JS direct click failed (textarea still filled)")
+	} else {
+		log.Printf("[chat] ensureMessageSent: no primary button found (%s), trying coordinate-based", jsClickedStr)
+	}
+
+	// 回退方案：坐标定位 + chromedp mouse click
 	var btnPos string
 	err := chromedp.Run(h.session.Context(),
 		chromedp.Evaluate(`(()=>{
 			const ta = document.querySelector('textarea');
 			if (!ta) return 'no_textarea';
-			const taRect = ta.getBoundingClientRect();
-			const taBottom = taRect.bottom;
+			const taBottom = ta.getBoundingClientRect().bottom;
 			const allBtns = document.querySelectorAll('[role="button"], button');
 			let rightmostBtn = null;
 			let rightmostX = -1;
@@ -635,31 +1024,34 @@ func (h *ChatHandler) ensureMessageSent() error {
 					x: Math.round(r.x + r.width/2),
 					y: Math.round(r.y + r.height/2),
 					tag: rightmostBtn.tagName,
-					cls: (rightmostBtn.getAttribute('class')||'').toString().substring(0,50)
+					cls: (rightmostBtn.getAttribute('class')||'').toString().substring(0,50),
+					disabled: rightmostBtn.disabled === true || rightmostBtn.getAttribute('aria-disabled') === 'true'
 				});
 			}
 			return JSON.stringify({found: false});
 		})()`, &btnPos),
 	)
-	if !strings.Contains(btnPos, `"found":true`) || err != nil {
-		return h.keyboardEnterFallback()
+	if strings.Contains(btnPos, `"found":true`) && !strings.Contains(btnPos, `"disabled":true`) && err == nil {
+		var pos struct {
+			Found    bool `json:"found"`
+			X        int  `json:"x"`
+			Y        int  `json:"y"`
+			Disabled bool `json:"disabled"`
+		}
+		json.Unmarshal([]byte(btnPos), &pos)
+		log.Printf("[chat] ensureMessageSent: found button at (%d,%d), trying mouse click", pos.X, pos.Y)
+		if h.tryMouseClickXY(pos.X, pos.Y) {
+			log.Println("[chat] ensureMessageSent: mouse click succeeded")
+			return nil
+		}
+		log.Println("[chat] ensureMessageSent: mouse click failed")
+	} else {
+		log.Printf("[chat] ensureMessageSent: no usable button (btnPos=%q, err=%v)", btnPos, err)
 	}
-	var pos struct {
-		Found bool `json:"found"`
-		X     int  `json:"x"`
-		Y     int  `json:"y"`
-	}
-	json.Unmarshal([]byte(btnPos), &pos)
-	if h.tryJSEventClick(pos.X, pos.Y) {
-		return nil
-	}
-	if h.tryMouseClickXY(pos.X, pos.Y) {
-		return nil
-	}
-	if h.tryKeyboardEnterRetry() {
-		return nil
-	}
-	return fmt.Errorf("failed to send message after all retry methods")
+
+	// 最终回退：键盘 Enter 重试
+	log.Println("[chat] ensureMessageSent: trying keyboard enter fallback")
+	return h.keyboardEnterFallback()
 }
 
 func (h *ChatHandler) tryJSEventClick(x, y int) bool {
@@ -704,22 +1096,67 @@ func (h *ChatHandler) tryKeyboardEnterRetry() bool {
 }
 
 func (h *ChatHandler) keyboardEnterFallback() error {
+	// 先尝试 Enter 键发送
 	chromedp.Run(h.session.Context(),
 		chromedp.Click("textarea", chromedp.ByQuery),
 		chromedp.Sleep(100*time.Millisecond),
 		chromedp.SendKeys("textarea", "\n", chromedp.ByQuery),
 	)
-	return nil
+	time.Sleep(500 * time.Millisecond)
+	if !h.isTextareaStillFilled() {
+		log.Println("[chat] keyboardEnterFallback: Enter succeeded")
+		return nil
+	}
+
+	// Enter 无效，尝试 Submit（触发表单提交）
+	log.Println("[chat] keyboardEnterFallback: Enter failed, trying Submit...")
+	chromedp.Run(h.session.Context(),
+		chromedp.Submit("textarea", chromedp.ByQuery),
+	)
+	time.Sleep(500 * time.Millisecond)
+	if !h.isTextareaStillFilled() {
+		log.Println("[chat] keyboardEnterFallback: Submit succeeded")
+		return nil
+	}
+
+	// 最终手段：强点点击 primary 按钮
+	log.Println("[chat] keyboardEnterFallback: Submit failed, trying direct click on primary button")
+	chromedp.Run(h.session.Context(),
+		chromedp.Evaluate(`(()=>{
+			const btn = document.querySelector('.ds-button--primary, button[class*="primary"]');
+			if (btn) {
+				btn.focus();
+				btn.click();
+				btn.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true}));
+				btn.dispatchEvent(new MouseEvent('mouseup', {bubbles: true, cancelable: true}));
+				btn.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
+				return 'clicked';
+			}
+			return 'no_btn';
+		})()`, nil),
+	)
+	time.Sleep(500 * time.Millisecond)
+	if !h.isTextareaStillFilled() {
+		log.Println("[chat] keyboardEnterFallback: direct click succeeded")
+		return nil
+	}
+
+	// 最终：全部失败，返回错误
+	return fmt.Errorf("all keyboard fallback methods failed")
 }
 
 func (h *ChatHandler) isTextareaStillFilled() bool {
 	var stillFilled bool
-	chromedp.Run(h.session.Context(),
+	err := chromedp.Run(h.session.Context(),
 		chromedp.Evaluate(`(()=>{
 			const ta = document.querySelector('textarea');
 			return ta && ta.value && ta.value.trim().length > 0;
 		})()`, &stillFilled),
 	)
+	if err != nil {
+		log.Printf("[chat] isTextareaStillFilled eval error: %v (assuming filled)", err)
+		return true
+	}
 	return stillFilled
 }
 
@@ -1044,27 +1481,55 @@ func (h *ChatHandler) detectImmediateError() (string, string) {
 }
 
 // retryWithAccountSwitch 切换账号后重新发送消息（支持多账号轮询）
-func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, text string, images []string) (*ChatResponse, error) {
+func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, text string, images []string, files []string) (*ChatResponse, error) {
 	accountCount := h.session.AccountCount()
-	log.Printf("[chat] starting account switch retry, total accounts: %d", accountCount)
+	log.Printf("[chat] starting account switch retry, total accounts: %d, mode=%q, text_len=%d, images=%d, files=%d",
+		accountCount, mode, len([]rune(text)), len(images), len(files))
 
 	// 只尝试其他账号，不重复登录当前账号（accountCount-1 次）
 	// 如果只有一个账号，则直接返回错误
 	if accountCount <= 1 {
+		log.Printf("[chat] retryWithAccountSwitch: only %d account(s), giving up", accountCount)
 		return nil, fmt.Errorf("服务器繁忙，请稍后重试")
 	}
+
+	// 记录当前页面状态以便诊断
+	var pageState string
+	chromedp.Run(h.session.Context(),
+		chromedp.Evaluate(`(()=>{
+			const ta = document.querySelector('textarea');
+			const articles = document.querySelectorAll('[class*="ds-markdown"]');
+			const fileInput = document.querySelector('input[type="file"]');
+			return JSON.stringify({
+				taExists: !!ta,
+				taDisabled: ta ? ta.disabled : false,
+				taValue: ta ? (ta.value||'').substring(0,50) : '',
+				articleCount: articles.length,
+				url: window.location.href.substring(0,100),
+				hasFileInput: !!fileInput
+			});
+		})()`, &pageState),
+	)
+	log.Printf("[chat] retryWithAccountSwitch: page state before retry: %s", pageState)
+
 	for attempt := 0; attempt < accountCount-1; attempt++ {
 		newEmail, switchErr := h.session.SwitchAccount()
 		if switchErr != nil {
-			log.Printf("[chat] switch account failed: %v (only one account or login error)", switchErr)
-			return nil, fmt.Errorf("切换账号失败: %w", switchErr)
+			log.Printf("[chat] switch account attempt %d failed: %v, trying next account", attempt+1, switchErr)
+			// 前进索引，下次 SwitchAccount 尝试下一个账号
+			h.session.advanceAccountIdx()
+			continue
 		}
-		log.Printf("[chat] attempt %d/%d: switched to account: %s", attempt+1, accountCount, newEmail)
+		log.Printf("[chat] attempt %d/%d: switched to account: %s", attempt+1, accountCount-1, newEmail)
 
+		log.Printf("[chat] attempt %d: preparing for retry (mode=%q, images=%d)", attempt+1, mode, len(images))
 		if err := h.prepareForRetry(ctx, mode, images); err != nil {
+			log.Printf("[chat] attempt %d prepareForRetry failed: %v", attempt+1, err)
 			return &ChatResponse{Content: "切换账号后准备失败"}, err
 		}
-		if err := h.sendMessage(text); err != nil {
+		log.Printf("[chat] attempt %d: sending messageOrUpload (text_len=%d, files=%d)", attempt+1, len([]rune(text)), len(files))
+		if err := h.sendMessageOrUpload(text, files); err != nil {
+			log.Printf("[chat] attempt %d sendMessageOrUpload failed: %v", attempt+1, err)
 			return &ChatResponse{Content: "切换账号后重新发送失败"}, err
 		}
 
@@ -1076,28 +1541,34 @@ func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, t
 		}
 		if errType == "convLimit" {
 			log.Printf("[chat] attempt %d hit convLimit, will retry with new conversation", attempt+1)
-			return h.retryWithNewConversation(ctx, mode, text, images)
+			return h.retryWithNewConversation(ctx, mode, text, images, files)
+		}
+		if errType != "" {
+			log.Printf("[chat] attempt %d detected other error: %s:%s", attempt+1, errType, errMsg)
 		}
 
 		// 等待响应
 		content, thinking, convLimit, serverBusy, err := h.waitForResponse(ctx, h.responseTimeout)
 		if err != nil {
-			log.Printf("[chat] attempt %d waitForResponse error: %v", attempt+1, err)
+			log.Printf("[chat] attempt %d waitForResponse error: %v (content=%d chars)", attempt+1, err, len([]rune(content)))
 			return &ChatResponse{Content: content, Thinking: thinking}, err
 		}
+		log.Printf("[chat] attempt %d waitForResponse: content=%d chars, thinking=%d chars, convLimit=%v, serverBusy=%v",
+			attempt+1, len([]rune(content)), len([]rune(thinking)), convLimit, serverBusy)
 		if serverBusy {
 			log.Printf("[chat] attempt %d serverBusy from waitForResponse, will try next account", attempt+1)
 			continue
 		}
 		if convLimit {
 			log.Printf("[chat] attempt %d convLimit from waitForResponse, will retry with new conversation", attempt+1)
-			return h.retryWithNewConversation(ctx, mode, text, images)
+			return h.retryWithNewConversation(ctx, mode, text, images, files)
 		}
 		if hasServerBusy(content) {
 			log.Printf("[chat] attempt %d hasServerBusy in content, will try next account", attempt+1)
 			continue
 		}
 		// 成功
+		log.Printf("[chat] attempt %d succeeded: content=%d chars", attempt+1, len([]rune(content)))
 		return &ChatResponse{Content: content, Thinking: thinking}, nil
 	}
 
@@ -1106,7 +1577,7 @@ func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, t
 }
 
 // retryWithNewConversation 开启新对话后重新发送消息
-func (h *ChatHandler) retryWithNewConversation(ctx context.Context, mode string, text string, images []string) (*ChatResponse, error) {
+func (h *ChatHandler) retryWithNewConversation(ctx context.Context, mode string, text string, images []string, files []string) (*ChatResponse, error) {
 	if err := h.NewConversation(ctx); err != nil {
 		log.Printf("[chat] new conversation failed: %v", err)
 		return &ChatResponse{Content: "达到对话长度上限"}, nil
@@ -1114,7 +1585,7 @@ func (h *ChatHandler) retryWithNewConversation(ctx context.Context, mode string,
 	if err := h.prepareForRetry(ctx, mode, images); err != nil {
 		return &ChatResponse{Content: "新开对话后准备失败"}, err
 	}
-	if err := h.sendMessage(text); err != nil {
+	if err := h.sendMessageOrUpload(text, files); err != nil {
 		return &ChatResponse{Content: "新开对话后重新发送失败"}, err
 	}
 	content, thinking, convLimit, serverBusy, err := h.waitForResponse(ctx, h.responseTimeout)
@@ -1124,7 +1595,7 @@ func (h *ChatHandler) retryWithNewConversation(ctx context.Context, mode string,
 	// 新对话后仍然繁忙，切换账号重试
 	if serverBusy || hasServerBusy(content) {
 		log.Printf("[chat] new conversation still serverBusy, switching account")
-		return h.retryWithAccountSwitch(ctx, mode, text, images)
+		return h.retryWithAccountSwitch(ctx, mode, text, images, files)
 	}
 	// 新对话后仍然命中上限（极端情况），返回错误
 	if convLimit || hasConvLimit(content) {
