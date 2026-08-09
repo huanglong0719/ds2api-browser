@@ -208,6 +208,24 @@ func (h *Handler) handleDebug(w http.ResponseWriter, r *http.Request) {
 			thinking: (window.__dsBrowserThinking || '').substring(0, 2000),
 			done: window.__dsBrowserDone || false,
 			domDone: window.__dsBrowserDOMDone || false,
+			observeActive: window.__dsObserveActive || false,
+			observeInterval: !!window.__dsObserveInterval,
+			scanResult: (function(){
+				var messages = document.querySelectorAll('[class*="ds-message"]');
+				if (!messages.length) return {error: 'no messages'};
+				var lastMsg = messages[messages.length - 1];
+				var hasAssistant = !!lastMsg.querySelector('[class*="ds-assistant-message-main-content"]');
+				var parent = lastMsg.parentElement;
+				var btns = parent ? parent.querySelectorAll('[class*="ds-button"]') : [];
+				return {
+					totalMessages: messages.length,
+					lastMsgClass: lastMsg.className,
+					hasAssistant: hasAssistant,
+					parentClass: parent ? parent.className : 'null',
+					parentBtnCount: btns.length,
+					wouldSetDone: hasAssistant && parent && btns.length >= 15
+				};
+			})(),
 			log: (window.__dsBrowserLog || []).slice(-30),
 			ptypes: window.__dsBrowserPTypes || {},
 			convLimit: window.__dsConvLimitHit || false,
@@ -236,6 +254,84 @@ func (h *Handler) handleDebug(w http.ResponseWriter, r *http.Request) {
 		})()`, &pageStr); err != nil {
 		log.Printf("[api] debug page eval error: %v", err)
 		pageStr = "{}"
+	}
+
+	// 如果 ?msgs=1，输出所有 ds-message 的详细结构
+	if r.URL.Query().Get("msgs") == "1" {
+		var msgsStr string
+		if err := browser.RunEval(h.chatHandler.Session().Context(),
+			`JSON.stringify((()=>{
+				var info = {messages: []};
+				var msgs = document.querySelectorAll('[class*="ds-message"]');
+				for (var i = 0; i < msgs.length; i++) {
+					var msg = msgs[i];
+					var item = {
+						index: i,
+						tag: msg.tagName,
+						className: msg.className,
+						textPreview: (msg.textContent || '').substring(0, 150),
+						hasAssistantContent: !!msg.querySelector('[class*="ds-assistant-message-main-content"]'),
+						hasMarkdown: !!msg.querySelector('[class*="ds-markdown"]'),
+						hasThinking: !!(msg.querySelector('[class*="thinking"]') || msg.querySelector('[class*="reasoning"]')),
+						buttonCount: msg.querySelectorAll('[class*="ds-button"]').length,
+						childCount: msg.children.length,
+						childClasses: []
+					};
+					for (var c = 0; c < msg.children.length && c < 10; c++) {
+						item.childClasses.push(msg.children[c].className);
+					}
+					info.messages.push(item);
+				}
+				info.totalMessages = msgs.length;
+
+				// 额外检查：最后一个 ds-message 的父级链和兄弟元素中的按钮
+				if (msgs.length > 0) {
+					var lastMsg = msgs[msgs.length - 1];
+					var chain = [];
+					var el = lastMsg;
+					for (var j = 0; j < 5 && el; j++) {
+						chain.push({
+							tag: el.tagName,
+							className: el.className,
+							buttonCount: el.querySelectorAll('button, [class*="ds-button"]').length,
+							childCount: el.children.length
+						});
+						el = el.parentElement;
+					}
+					info.lastMsgParentChain = chain;
+
+					var next = lastMsg.nextElementSibling;
+					info.lastMsgNextSibling = next ? {
+						tag: next.tagName,
+						className: next.className,
+						buttonCount: next.querySelectorAll('button, [class*="ds-button"]').length,
+						textPreview: (next.textContent || "").substring(0, 200)
+					} : null;
+
+					// 检查页面所有 button 元素及其所属消息
+					var allBtns = document.querySelectorAll('button, [class*="ds-button"]');
+					var btnInfo = [];
+					for (var b = 0; b < allBtns.length && b < 20; b++) {
+						var btn = allBtns[b];
+						var btnParent = btn.closest('[class*="ds-message"]');
+						btnInfo.push({
+							tag: btn.tagName,
+							className: (btn.className || '').substring(0, 100),
+							ariaLabel: btn.getAttribute('aria-label') || '',
+							parentMsg: btnParent ? 'IN_MESSAGE' : 'OUTSIDE'
+						});
+					}
+					info.allButtons = btnInfo;
+					info.totalButtons = allBtns.length;
+				}
+				return info;
+			})())`, &msgsStr); err != nil {
+			msgsStr = `{"error":"` + err.Error() + `"}`
+		}
+		json.NewEncoder(w).Encode(map[string]json.RawMessage{
+			"messages": json.RawMessage(msgsStr),
+		})
+		return
 	}
 
 	json.NewEncoder(w).Encode(map[string]json.RawMessage{
@@ -320,6 +416,9 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 	} else if h.chatHandler.ShouldNewConversation() {
 		shouldNewConv = true
 		log.Printf("[api] new conversation (idle > 10min)")
+	} else if h.chatHandler.ShouldNewConversationByCount() {
+		shouldNewConv = true
+		log.Printf("[api] new conversation (msg count reached random threshold)")
 	} else {
 		log.Printf("[api] continuous chat (reusing existing conversation, msgs=%d)", len(req.Messages))
 	}

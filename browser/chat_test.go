@@ -101,12 +101,15 @@ func TestDeduplicateSingleLineRepeat(t *testing.T) {
 		{name: "too short", input: "abab", question: "", want: "abab"},
 		// 不应误判短重复（full 长度 < 4）
 		{name: "short full not deduped", input: "abcab", question: "", want: "abcab"},
-		// 模式3：问题回显剥离
-		{name: "echo strip: 42+2 with question 2+2=?", input: "42+2", question: "2+2=? answer with number only", want: "4"},
-		{name: "echo strip: 21+1=? with question 1+1=?", input: "21+1=?", question: "1+1=? answer with number only", want: "2"},
-		{name: "echo strip: normal answer preserved", input: "Paris", question: "what is the capital of France?", want: "Paris"},
-		{name: "echo strip: no question no strip", input: "42+2", question: "", want: "42+2"},
-		{name: "echo strip: long content no strip", input: "This is a long response that should not be stripped of any echo", question: "echo", want: "This is a long response that should not be stripped of any echo"},
+		// 模式3：问题回显剥离 [Disabled 2026-07-20]
+		// 禁用原因：该模式对每一行单独处理，会误删 JSON 字段值（如 "LIMIT"、6.11、"next_day_expect"）
+		// 原始目标（处理 JSON 后追加的对话标题）已由 trimTrailingExtra 用括号配对精确接管
+		// 以下 case 的 want 反映模式3 禁用后的实际行为：短输入原样返回，不剥离
+		{name: "echo strip disabled: 42+2 with question 2+2=?", input: "42+2", question: "2+2=? answer with number only", want: "42+2"},
+		{name: "echo strip disabled: 21+1=? with question 1+1=?", input: "21+1=?", question: "1+1=? answer with number only", want: "21+1=?"},
+		{name: "echo strip disabled: normal answer preserved", input: "Paris", question: "what is the capital of France?", want: "Paris"},
+		{name: "echo strip disabled: no question no strip", input: "42+2", question: "", want: "42+2"},
+		{name: "echo strip disabled: long content no strip", input: "This is a long response that should not be stripped of any echo", question: "echo", want: "This is a long response that should not be stripped of any echo"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -293,6 +296,59 @@ func TestShouldNewConversation_StaleActivity(t *testing.T) {
 	h.lastActivity.Store(time.Now().Add(-11 * time.Minute).UnixNano())
 	if !h.ShouldNewConversation() {
 		t.Error("ShouldNewConversation() after 11 min should return true")
+	}
+}
+
+// newTestSession 构造指定登录态的 Session（loggedIn 为 atomic.Bool，不能字面量初始化）
+func newTestSession(loggedIn bool) *Session {
+	s := &Session{}
+	s.loggedIn.Store(loggedIn)
+	return s
+}
+
+func TestShouldRefreshPage_IdleNeverRefreshed(t *testing.T) {
+	h := NewChatHandler(newTestSession(true), 120)
+	// lastActivity 为零（视为长时间空闲）且从未刷新过 → 应刷新
+	if !h.shouldRefreshPage() {
+		t.Error("should refresh when idle long and never refreshed")
+	}
+}
+
+func TestShouldRefreshPage_JustRefreshed(t *testing.T) {
+	h := NewChatHandler(newTestSession(true), 120)
+	h.lastRefresh.Store(time.Now().UnixNano())
+	// 刚刷新过，即使空闲超 30 分钟也不应重复刷新
+	if h.shouldRefreshPage() {
+		t.Error("should not refresh within 30min of last refresh")
+	}
+}
+
+func TestShouldRefreshPage_Active(t *testing.T) {
+	h := NewChatHandler(newTestSession(true), 120)
+	h.lastRefresh.Store(time.Now().Add(-31 * time.Minute).UnixNano())
+	h.lastActivity.Store(time.Now().UnixNano())
+	// 距上次刷新超 30 分钟但最近有请求 → 不应刷新
+	if h.shouldRefreshPage() {
+		t.Error("should not refresh when active")
+	}
+}
+
+func TestShouldRefreshPage_StaleRefreshNotLoggedIn(t *testing.T) {
+	h := NewChatHandler(newTestSession(false), 120)
+	h.lastRefresh.Store(time.Now().Add(-31 * time.Minute).UnixNano())
+	// 空闲且距上次刷新超 30 分钟，但未登录（账号切换中）→ 不应刷新
+	if h.shouldRefreshPage() {
+		t.Error("should not refresh when not logged in")
+	}
+}
+
+func TestShouldRefreshPage_StaleActivityAndRefresh(t *testing.T) {
+	h := NewChatHandler(newTestSession(true), 120)
+	h.lastRefresh.Store(time.Now().Add(-31 * time.Minute).UnixNano())
+	h.lastActivity.Store(time.Now().Add(-31 * time.Minute).UnixNano())
+	// 空闲超 30 分钟且距上次刷新超 30 分钟 → 应刷新
+	if !h.shouldRefreshPage() {
+		t.Error("should refresh when both idle and last refresh stale")
 	}
 }
 

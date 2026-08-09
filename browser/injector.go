@@ -14,6 +14,7 @@ window.__dsBrowserDone = false;
 window.__dsBrowserLog = [];
 window.__dsBrowserPTypes = {};
 window.__dsBrowserSamples = {};
+window.__dsBrowserUnknownSamples = [];
 window.__dsCurrentFragmentType = '';
 window.__dsInjectDone = true;
 window.__dsServerBusy = false;
@@ -64,6 +65,7 @@ window.fetch = async function(...args) {
 						const d = JSON.parse(line.slice(6));
 						var ptype = d.p || (d.content ? 'direct_content' : (d.thinking ? 'direct_thinking' : (d.v && d.v.response ? 'v_response' : 'unknown')));
 						window.__dsBrowserPTypes[ptype] = (window.__dsBrowserPTypes[ptype] || 0) + 1;
+                                            if (ptype === 'unknown' && window.__dsBrowserUnknownSamples.length < 5) { window.__dsBrowserUnknownSamples.push(JSON.stringify(d).substring(0, 300)); }
 						if (!window.__dsBrowserSamples[ptype]) window.__dsBrowserSamples[ptype] = JSON.stringify(d).substring(0, 200);
 						if (d.p === 'response/fragments' && d.o === 'APPEND' && Array.isArray(d.v)) {
 							for (const f of d.v) {
@@ -167,6 +169,7 @@ window.XMLHttpRequest = function() {
 							const d = JSON.parse(line.slice(6));
 							var ptype = d.p || (d.content ? 'direct_content' : (d.thinking ? 'direct_thinking' : (d.v && d.v.response ? 'v_response' : 'unknown')));
 							window.__dsBrowserPTypes[ptype] = (window.__dsBrowserPTypes[ptype] || 0) + 1;
+                                                   if (ptype === 'unknown' && window.__dsBrowserUnknownSamples.length < 5) { window.__dsBrowserUnknownSamples.push(JSON.stringify(d).substring(0, 300)); }
 							if (!window.__dsBrowserSamples[ptype]) window.__dsBrowserSamples[ptype] = JSON.stringify(d).substring(0, 200);
 							if (d.p === 'response/fragments' && d.o === 'APPEND' && Array.isArray(d.v)) {
 								for (const f of d.v) {
@@ -268,6 +271,7 @@ if (OrigES) {
 					const d = JSON.parse(e.data);
 					var ptype = d.p || (d.content ? 'direct_content' : (d.thinking ? 'direct_thinking' : (d.v && d.v.response ? 'v_response' : 'unknown')));
 					window.__dsBrowserPTypes[ptype] = (window.__dsBrowserPTypes[ptype] || 0) + 1;
+                                   if (ptype === 'unknown' && window.__dsBrowserUnknownSamples.length < 5) { window.__dsBrowserUnknownSamples.push(JSON.stringify(d).substring(0, 300)); }
 					if (!window.__dsBrowserSamples[ptype]) window.__dsBrowserSamples[ptype] = JSON.stringify(d).substring(0, 200);
 					if (d.p === 'response/fragments' && d.o === 'APPEND' && Array.isArray(d.v)) {
 						for (const f of d.v) {

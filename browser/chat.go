@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,92 +14,162 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/chromedp"
 )
 
 const (
-	clickDelay          = 300 * time.Millisecond
-	typeDelay           = 50 * time.Millisecond
-	enterDelay          = 200 * time.Millisecond
-	uploadDelay         = 500 * time.Millisecond
-	previewCheck        = 300 * time.Millisecond
-	modeSwitchDelay     = 800 * time.Millisecond
-	newConvDelay        = 1500 * time.Millisecond
-	pollInterval        = 300 * time.Millisecond
-	maxTextChunk        = 3000
-	fileUploadThreshold = 3000
-	requestBodyLimit    = 10 << 20
+	clickDelay       = 300 * time.Millisecond
+	typeDelay        = 50 * time.Millisecond
+	enterDelay       = 200 * time.Millisecond
+	previewCheck     = 300 * time.Millisecond
+	// 上传后等待发送按钮恢复可用的超时上限（CDP 实测：12.3MB 文件约 1.9s、6MB 图片约 1.1s）
+	sendBtnReadyTimeout = 15 * time.Second
+	modeSwitchDelay  = 800 * time.Millisecond
+	newConvDelay     = 1500 * time.Millisecond
+	pollInterval     = 300 * time.Millisecond
+	maxTextChunk     = 3000
+	requestBodyLimit = 10 << 20
+
+	// 空闲保活刷新：距离上次请求超过该时长时刷新页面，唤醒可能休眠的 Chrome 渲染进程
+	idleRefreshInterval = 30 * time.Minute
+	// 后台保活刷新检查周期（StartIdleRefresher）
+	idleRefreshCheck = 5 * time.Minute
 )
 
-// errorDetectJS 统一的 DOM 错误检测 JS，被 waitForResponse 和 detectImmediateError 共用
+// errorDetectJS 统一的 DOM 错误检测 JS
+// [Fix 2026-07-31] 只检查最后一个 ds-message（即本次请求的回复），不扫描全页面，不需要 baseline
+// 返回格式：空字符串=无异常, "serverBusy:关键词"=服务器繁忙, "convLimit:关键词"=对话上限, "thinking"=AI正常工作中
 const errorDetectJS = `
 (function() {
-	var ta = document.querySelector('textarea');
-	var taDisabled = ta && ta.disabled;
-	var busyKeywords = ['消息发送过于频繁', '发送过于频繁', '服务器繁忙', '服务繁忙', '请稍后重试', '请稍后再试'];
+	var busyKeywords = ['消息发送过于频繁', '发送过于频繁', '服务器繁忙', '服务繁忙', '请稍后重试', '请稍后再试', '有消息正在生成'];
 	var limitKeywords = ['达到对话长度上限', '请开启新对话', '对话长度上限'];
+	// [Fix 2026-08-09] 含"正在阅读"：大文件发送后页面先显示"正在阅读"再"正在思考"，
+	// 识别"正在阅读"可让大文件请求立即进入等待回复，不用白等 3 秒检测窗口
+	var thinkingKeywords = ['正在思考', '已思考', '正在阅读'];
 
-	// 1. 精准检测 ds-message 中的短文本错误提示
-	var msgSelectors = ['.ds-message', '[class*="ds-message"]', '[class*="message-bubble"]', '[class*="error-message"]', '[class*="warning"]', '[class*="system-message"]'];
-	for (var s = 0; s < msgSelectors.length; s++) {
-		var msgs = document.querySelectorAll(msgSelectors[s]);
-		for (var i = 0; i < msgs.length; i++) {
-			var txt = (msgs[i].textContent || '').trim();
-			if (txt.length > 200) continue;
-			for (var k = 0; k < busyKeywords.length; k++) {
-				if (txt.indexOf(busyKeywords[k]) !== -1) return 'serverBusy:' + busyKeywords[k];
-			}
-			for (var k = 0; k < limitKeywords.length; k++) {
-				if (txt.indexOf(limitKeywords[k]) !== -1) return 'convLimit:' + limitKeywords[k];
-			}
-		}
-	}
+	if (window.__dsServerBusy) return 'serverBusy:interceptor';
 
-	// 2. textarea 被禁用时，扫描页面全文
-	if (taDisabled) {
-		var all = (document.body && document.body.textContent) || '';
-		for (var i = 0; i < busyKeywords.length; i++) {
-			if (all.indexOf(busyKeywords[i]) !== -1) return 'serverBusy:' + busyKeywords[i];
-		}
-		for (var i = 0; i < limitKeywords.length; i++) {
-			if (all.indexOf(limitKeywords[i]) !== -1) return 'convLimit:' + limitKeywords[i];
-		}
-		return 'serverBusy:inputDisabled';
-	}
-
-	// 3. 页面全文扫描
-	var all = (document.body && document.body.textContent) || '';
-	for (var i = 0; i < busyKeywords.length; i++) {
-		if (all.indexOf(busyKeywords[i]) !== -1) return 'serverBusy:' + busyKeywords[i];
-	}
-	for (var i = 0; i < limitKeywords.length; i++) {
-		if (all.indexOf(limitKeywords[i]) !== -1) return 'convLimit:' + limitKeywords[i];
-	}
-
-	// 4. toast/notification 元素检测
-	var selectors = '[class*="toast"], [class*="notification"], [class*="error"], [class*="notice"], [role="alert"], [class*="snackbar"], [class*="message"]';
-	var toasts = document.querySelectorAll(selectors);
-	for (var j = 0; j < toasts.length; j++) {
-		var ttxt = (toasts[j].textContent || toasts[j].innerText || '').trim();
-		if (ttxt.length > 200) continue;
+	// [Fix 2026-08-09] 扫描 Toast/notification 形式的系统提示（"服务器繁忙"等可能以右上角弹窗出现，
+	// 不在 ds-message 消息链中，且服务器繁忙时页面可能连用户消息都不显示）。
+	// 因此本扫描必须在 messages 检查之前执行，否则页面无消息时会提前返回、扫不到弹窗。
+	// 2026-08-07 曾确认该场景，但 2026-07-31 重构为"只查 lastMsg"时该步骤被删除；
+	// 2026-08-09 CDP 实测漏检（注入 Toast 后仍返回 thinking），重新加回。
+	var toastEls = document.querySelectorAll('[class*="toast"], [class*="notification"], [role="alert"]');
+	for (var j = 0; j < toastEls.length; j++) {
+		var ttxt = (toastEls[j].textContent || '').trim();
+		if (!ttxt || ttxt.length > 200) continue; // 跳过过长内容避免误扫
 		for (var k = 0; k < busyKeywords.length; k++) {
-			if (ttxt.indexOf(busyKeywords[k]) !== -1) return 'serverBusy:' + busyKeywords[k];
+			if (ttxt.indexOf(busyKeywords[k]) !== -1) {
+				window.__dsDiagLog = 'toast class=' + toastEls[j].className + ' text=' + ttxt.substring(0, 200);
+				return 'serverBusy:' + busyKeywords[k];
+			}
 		}
 		for (var k = 0; k < limitKeywords.length; k++) {
-			if (ttxt.indexOf(limitKeywords[k]) !== -1) return 'convLimit:' + limitKeywords[k];
+			if (ttxt.indexOf(limitKeywords[k]) !== -1) {
+				window.__dsDiagLog = 'toast class=' + toastEls[j].className + ' text=' + ttxt.substring(0, 200);
+				return 'convLimit:' + limitKeywords[k];
+			}
 		}
 	}
 
-	// 5. innerHTML 深度扫描（捕获 textContent 遗漏的内容）
-	var html = (document.body && document.body.innerHTML || '').substring(0, 5000);
-	for (var i = 0; i < busyKeywords.length; i++) {
-		if (html.indexOf(busyKeywords[i]) !== -1) return 'serverBusy:' + busyKeywords[i];
+	// 只检查最后一个 ds-message（本次请求的回复）及其相邻元素
+	// [Fix 2026-07-31] 系统提示（如"消息发送过于频繁"）可能出现在 lastMsg 的下一个兄弟元素中
+	// 而不是在 ds-message 内部，必须同时检查两者
+	var messages = document.querySelectorAll('[class*="ds-message"]');
+	if (messages.length === 0) return '';
+	var lastMsg = messages[messages.length - 1];
+	var text = (lastMsg.textContent || '');
+	var next = lastMsg.nextElementSibling;
+	if (next) {
+		text += ' ' + (next.textContent || '');
 	}
-	for (var i = 0; i < limitKeywords.length; i++) {
-		if (html.indexOf(limitKeywords[i]) !== -1) return 'convLimit:' + limitKeywords[i];
+	if (!text.trim()) return '';
+
+	// 检测系统提示（优先）
+	for (var k = 0; k < busyKeywords.length; k++) {
+		if (text.indexOf(busyKeywords[k]) !== -1) {
+			window.__dsDiagLog = 'class=' + lastMsg.className + ' text=' + text.substring(0, 200);
+			return 'serverBusy:' + busyKeywords[k];
+		}
+	}
+	for (var k = 0; k < limitKeywords.length; k++) {
+		if (text.indexOf(limitKeywords[k]) !== -1) {
+			window.__dsDiagLog = 'class=' + lastMsg.className + ' text=' + text.substring(0, 200);
+			return 'convLimit:' + limitKeywords[k];
+		}
+	}
+
+	// 检测 thinking
+	for (var t = 0; t < thinkingKeywords.length; t++) {
+		if (text.indexOf(thinkingKeywords[t]) !== -1) {
+			return 'thinking';
+		}
 	}
 
 	return '';
+})()
+`
+
+// dumpSystemPromptLocation 诊断用：扫描全页面找到系统提示文本的实际 DOM 位置
+// 不改变检测逻辑，只在系统提示出现时记录其 tag/class/parentChain/相对ds-message位置
+// 用于确定 errorDetectJS 漏检的根因
+const dumpSystemPromptLocation = `
+(function() {
+	var keywords = ['消息发送过于频繁', '发送过于频繁', '服务器繁忙', '服务繁忙',
+		'请稍后重试', '请稍后再试', '有消息正在生成',
+		'达到对话长度上限', '请开启新对话', '对话长度上限'];
+	var body = document.body;
+	if (!body) return '';
+
+	// 递归查找包含关键词的文本节点
+	function findKeywordNodes(el, results) {
+		if (!el || el === document) return;
+		// 跳过 script/style 标签
+		if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE') return;
+		for (var i = 0; i < el.childNodes.length; i++) {
+			var child = el.childNodes[i];
+			if (child.nodeType === 3) { // 文本节点
+				var txt = child.textContent || '';
+				for (var k = 0; k < keywords.length; k++) {
+					if (txt.indexOf(keywords[k]) !== -1) {
+						// 记录包含该关键词的元素信息
+						var info = {
+							keyword: keywords[k],
+							tag: el.tagName,
+							className: (el.className || '').substring(0, 100),
+							text: txt.substring(0, 200),
+							parentTag: el.parentElement ? el.parentElement.tagName : 'null',
+							parentClass: el.parentElement ? (el.parentElement.className || '').substring(0, 100) : 'null',
+							isDsMessage: !!(el.className && el.className.indexOf('ds-message') !== -1),
+							// 检查与 ds-message 的关系
+							closestDsMsg: (function(){
+								var p = el;
+								while (p) {
+									if (p.className && p.className.indexOf('ds-message') !== -1) break;
+									p = p.parentElement;
+								}
+								return p ? p.className.substring(0, 80) : 'null';
+							})(),
+							// 检查是否是 ds-message 的兄弟元素
+							prevSiblingTag: el.previousElementSibling ? el.previousElementSibling.tagName : 'null',
+							prevSiblingClass: el.previousElementSibling ? (el.previousElementSibling.className || '').substring(0, 80) : 'null',
+							nextSiblingTag: el.nextElementSibling ? el.nextElementSibling.tagName : 'null',
+							nextSiblingClass: el.nextElementSibling ? (el.nextElementSibling.className || '').substring(0, 80) : 'null'
+						};
+						results.push(info);
+						return; // 每个元素只记录一次
+					}
+				}
+			} else if (child.nodeType === 1) {
+				findKeywordNodes(child, results);
+			}
+		}
+	}
+
+	var results = [];
+	findKeywordNodes(body, results);
+	return JSON.stringify(results);
 })()
 `
 
@@ -109,22 +180,32 @@ var observeCaptureScript = `
 	if (window.__dsObserveInterval) {
 		clearInterval(window.__dsObserveInterval);
 	}
-	let lastText = '';
-	let unchangedCount = 0;
 
 	function scan() {
+		// [Fix 2026-07-31] 5个操作按钮不在 ds-message 内部，在其父级容器中
+		// 依据：DOM_STRUCTURE.md 第三章——按钮在 ds-message 的兄弟元素中
+		// 每个按钮由3个div组成（本体+背景+图标），5个按钮×3=15个 [class*="ds-button"]
+		// 必须确认 lastMsg 是 AI 回复（含 ds-assistant-message-main-content），
+		// 避免用户消息（d29f3d7d）的父级容器误判（上一轮回复的按钮还在）
+		//
+		// [Fix 2026-07-31] 增加 baseline 检查，避免上一轮回复的按钮被误判为本轮完成
+		// 场景：新请求发送后，上一轮 AI 回复的 15 个按钮还在页面上，scan 会立即设 domDone=true
+		// 但此时本轮 AI 还没开始回复（capture=""），会触发"DOM已完成但拦截器空"错误分支
+		// 解决：只有当本轮有新的 ds-markdown 出现（数量 > baseline）时，才扫描按钮
 		const articles = document.querySelectorAll('[class*="ds-markdown"]');
-		if (articles.length === 0) return;
-		const last = articles[articles.length - 1];
-		const text = (last.textContent || '').trim();
-		if (text && text !== lastText) {
-			lastText = text;
-			unchangedCount = 0;
-		} else if (text && text === lastText) {
-			unchangedCount++;
-		}
-		if (text && unchangedCount >= 3) {
+		if (articles.length <= (window.__dsArticleBaseline || 0)) return;
+		const messages = document.querySelectorAll('[class*="ds-message"]');
+		if (!messages.length) return;
+		const lastMsg = messages[messages.length - 1];
+		// 必须是 AI 回复，不是用户消息
+		if (!lastMsg.querySelector('[class*="ds-assistant-message-main-content"]')) return;
+		// 按钮在父级容器中（不在 ds-message 内部）
+		const parent = lastMsg.parentElement;
+		if (!parent) return;
+		const btns = parent.querySelectorAll('[class*="ds-button"]');
+		if (btns.length >= 15) {
 			window.__dsBrowserDOMDone = true;
+			return;
 		}
 	}
 	window.__dsObserveInterval = setInterval(scan, 500);
@@ -133,10 +214,13 @@ var observeCaptureScript = `
 `
 
 type ChatHandler struct {
-	session         *Session
-	mu              sync.Mutex
-	responseTimeout time.Duration
-	lastActivity    atomic.Int64
+	session          *Session
+	mu               sync.Mutex
+	responseTimeout  time.Duration
+	lastActivity     atomic.Int64
+	lastRefresh      atomic.Int64 // 最近一次空闲保活刷新时间（纳秒时间戳，0=从未刷新）
+	convMsgCount     atomic.Int64 // 当前对话中已发送的消息数
+	convMsgThreshold atomic.Int64 // 触发新对话的随机阈值（30-60）
 }
 
 type ChatRequest struct {
@@ -156,7 +240,10 @@ func NewChatHandler(session *Session, timeoutSec int) *ChatHandler {
 	if timeoutSec <= 0 {
 		timeoutSec = 120
 	}
-	return &ChatHandler{session: session, responseTimeout: time.Duration(timeoutSec) * time.Second}
+	h := &ChatHandler{session: session, responseTimeout: time.Duration(timeoutSec) * time.Second}
+	// 随机生成30-60之间的阈值，避免固定间隔被检测
+	h.convMsgThreshold.Store(int64(30 + rand.Intn(31)))
+	return h
 }
 
 // Session 返回底层 Session 引用
@@ -225,45 +312,27 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 		step("uploadImage")
 	}
 
-	// 统一文件上传：收集客户端文件 + 长文本（转为文件）
-	type fileItem struct {
-		path string
-		tmp  bool // 是否临时文件，需在流程结束时清理
-	}
-	var allFiles []fileItem
-
 	// 客户端传的文件（路径已在 handler 中生成）
+	var allFiles []string
 	for _, f := range files {
-		allFiles = append(allFiles, fileItem{path: f})
+		allFiles = append(allFiles, f)
 	}
 
-	// 长文本（超过阈值）转为文件，避免 textarea 撑大导致按钮不可见
-	textRunes := len([]rune(text))
-	needTextFile := textRunes > fileUploadThreshold && mode != "image"
-	if needTextFile {
-		log.Printf("[chat] text too long (%d chars), saving as file", textRunes)
-		tmpPath := filepath.Join(os.TempDir(), fmt.Sprintf("ds_message_%d.txt", time.Now().UnixNano()))
-		if err := os.WriteFile(tmpPath, []byte(text), 0644); err != nil {
-			return nil, fmt.Errorf("write text file: %w", err)
-		}
-		defer os.Remove(tmpPath)
-		allFiles = append(allFiles, fileItem{path: tmpPath, tmp: true})
-	}
-
-	// 上传所有收集到的文件（一次 SetUploadFiles 调用，不互相覆盖）
+	// 上传文件
 	if len(allFiles) > 0 {
-		paths := make([]string, len(allFiles))
-		for i, f := range allFiles {
-			paths[i] = f.path
-		}
-		log.Printf("[chat] uploading %d file(s) to DeepSeek", len(paths))
+		log.Printf("[chat] uploading %d file(s) to DeepSeek", len(allFiles))
 		if err := chromedp.Run(h.session.Context(),
-			chromedp.SetUploadFiles(`input[type="file"]`, paths, chromedp.ByQuery),
+			chromedp.SetUploadFiles(`input[type="file"]`, allFiles, chromedp.ByQuery),
 		); err != nil {
 			return nil, fmt.Errorf("upload files: %w", err)
 		}
-		log.Println("[chat] files uploaded, waiting for processing...")
-		time.Sleep(1 * time.Second)
+		log.Println("[chat] files uploaded, waiting for send button ready...")
+		// [Fix 2026-08-09] 等发送按钮恢复可用（替代固定 1 秒等待）。
+		// CDP 实测：上传中按钮禁用（ds-button--disabled），上传完成立即恢复可用。
+		// 大文件不会被提前发送；小文件不用白等。超时只告警不中断
+		if !h.waitSendBtnReady(sendBtnReadyTimeout) {
+			log.Printf("[chat] warn: send button not ready within %v after file upload", sendBtnReadyTimeout)
+		}
 		step("uploadFiles")
 
 		// 文件上传后立即检查页面是否有服务器繁忙等错误提示
@@ -280,20 +349,16 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 			return h.retryWithNewConversation(ctx, mode, text, images, files)
 		}
 
-		// 输入提示文字并发送（保持 textarea 短小让按钮可见）
-		prompt := text
-		if needTextFile {
-			prompt = "请处理附件中的内容"
-		}
-		if prompt == "" {
-			prompt = "请处理附件中的内容"
-		}
+		// 输入提示文字并发送
+		prompt := "请处理附件中的内容"
 		if err := h.clearTextarea(); err != nil {
 			return nil, fmt.Errorf("clear textarea: %w", err)
 		}
 		if err := h.typeText(prompt); err != nil {
 			return nil, fmt.Errorf("type prompt: %w", err)
 		}
+		// 模拟人类输入完成后的随机停顿
+		time.Sleep(time.Duration(500+rand.Intn(1500)) * time.Millisecond)
 		stillInBox, err := h.pressEnter()
 		if err != nil {
 			return nil, fmt.Errorf("press enter: %w", err)
@@ -302,10 +367,12 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 			// 发送可能被页面错误遮挡，先检查错误再做兜底点击
 			errType, errMsg := h.detectImmediateError()
 			if errType == "serverBusy" {
+				logDiagInfo(h, errType, errMsg)
 				log.Printf("[chat] detected %s after file upload: %s", errType, errMsg)
 				return h.retryWithAccountSwitch(ctx, mode, text, images, files)
 			}
 			if errType == "convLimit" {
+				logDiagInfo(h, errType, errMsg)
 				log.Printf("[chat] detected %s after file upload: %s", errType, errMsg)
 				return h.retryWithNewConversation(ctx, mode, text, images, files)
 			}
@@ -333,6 +400,7 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 
 	errType, errMsg := h.detectImmediateError()
 	if errType != "" {
+		logDiagInfo(h, errType, errMsg)
 		log.Printf("[chat] detected %s immediately after send: %s", errType, errMsg)
 		if errType == "serverBusy" {
 			return h.retryWithAccountSwitch(ctx, mode, text, images, files)
@@ -359,7 +427,23 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 		return h.retryWithNewConversation(ctx, mode, text, images, files)
 	}
 
+	// 拦截器内容为空时，尝试复制按钮兜底
+	if content == "" {
+		log.Printf("[chat] interceptor returned empty content, trying copy button fallback")
+		if copyContent, err := h.fetchContentViaCopyButton(); err == nil && copyContent != "" {
+			content = copyContent
+			log.Printf("[chat] copy button fallback: replaced content with %d chars", len([]rune(content)))
+		} else {
+			log.Printf("[chat] copy button fallback failed: %v", err)
+		}
+	}
+
 	log.Printf("[chat] got response: %d chars, thinking: %d chars", len([]rune(content)), len([]rune(thinking)))
+	// [账号质量管理] 主路径首次成功才计入会话统计；重试路径成功不计数（避免同一请求重复计数）
+	if content != "" {
+		h.session.sessionRequestCount++
+		h.convMsgCount.Add(1)
+	}
 	h.lastActivity.Store(time.Now().UnixNano())
 	return &ChatResponse{Content: content, Thinking: thinking}, nil
 }
@@ -372,12 +456,36 @@ func (h *ChatHandler) ShouldNewConversation() bool {
 	return time.Since(time.Unix(0, ns)) > 10*time.Minute
 }
 
+// ShouldNewConversationByCount 检查当前对话消息数是否达到随机阈值
+// 当对话连续发送30-60条消息后，随机触发新对话，避免固定间隔被检测
+func (h *ChatHandler) ShouldNewConversationByCount() bool {
+	count := h.convMsgCount.Load()
+	threshold := h.convMsgThreshold.Load()
+	if threshold == 0 {
+		return false
+	}
+	return count >= threshold
+}
+
 func (h *ChatHandler) ensureReady() error {
-	if !h.session.loggedIn {
+	if !h.session.loggedIn.Load() {
 		return fmt.Errorf("not logged in")
 	}
 	// 每次发送前清理多余标签页，确保只有一个 DeepSeek 页
 	h.session.closeExtraTargets()
+
+	// 长时间空闲后（如收盘到复盘之间数小时），Chrome 渲染进程可能进入睡眠状态，
+	// 导致 chromedp.Evaluate 调用耗时极长甚至挂起。直接刷新页面唤醒渲染进程，
+	// 并带超时确认刷新成功，避免后续流程无限等待。
+	// 只在距离上次请求超过 30 分钟（且距离上次刷新超过 30 分钟）时才刷新，
+	// 避免频繁请求时产生额外开销。后台保活 goroutine（StartIdleRefresher）也会执行
+	// 同样的刷新，保证长时间无请求时页面保持活跃，请求到来时无需现场唤醒。
+	if h.shouldRefreshPage() {
+		if err := h.refreshPageLocked(); err != nil {
+			return err
+		}
+	}
+
 	if err := h.session.ensureOnDeepSeek(h.session.Context()); err != nil {
 		return fmt.Errorf("navigate to DeepSeek: %w", err)
 	}
@@ -390,6 +498,93 @@ func (h *ChatHandler) ensureReady() error {
 		return fmt.Errorf("textarea not found on page")
 	}
 	return nil
+}
+
+// idleDuration 返回距离上次活动的时间，用于判断是否需要做空闲恢复检查
+func (h *ChatHandler) idleDuration() time.Duration {
+	ns := h.lastActivity.Load()
+	if ns == 0 {
+		return time.Hour // 首次启动，视为长时间空闲
+	}
+	return time.Since(time.Unix(0, ns))
+}
+
+// shouldRefreshPage 判断是否需要进行空闲保活刷新：
+//   - 距离上次请求超过 idleRefreshInterval（页面可能已进入休眠/被节流）
+//   - 且距离上次刷新超过 idleRefreshInterval（保持"每 30 分钟最多刷一次"，避免重复刷新）
+//   - 且已登录（登录/账号切换过程中不刷新，避免干扰切换流程）
+func (h *ChatHandler) shouldRefreshPage() bool {
+	if !h.session.loggedIn.Load() {
+		return false
+	}
+	if h.idleDuration() <= idleRefreshInterval {
+		return false
+	}
+	last := h.lastRefresh.Load()
+	return last == 0 || time.Since(time.Unix(0, last)) > idleRefreshInterval
+}
+
+// refreshPageLocked 执行空闲保活刷新：导航回 DeepSeek 首页唤醒渲染进程，
+// 并带超时确认页面恢复响应。调用方必须持有 h.mu（与 sendChat 互斥）。
+// 刷新成功后记录 lastRefresh，避免在 30 分钟内重复刷新。
+func (h *ChatHandler) refreshPageLocked() error {
+	log.Printf("[chat] idle > 30min, refreshing page")
+	h.session.NavigateHome(h.session.Context())
+	time.Sleep(2 * time.Second)
+
+	// 确认刷新后页面能正常响应
+	checkCtx, cancel := context.WithTimeout(h.session.Context(), 5*time.Second)
+	defer cancel()
+	var ok bool
+	if err := chromedp.Run(checkCtx, chromedp.Evaluate(`!!document.querySelector('textarea')`, &ok)); err != nil {
+		log.Printf("[chat] page still unresponsive after refresh: %v", err)
+		return fmt.Errorf("page unresponsive after idle: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("textarea not found after idle refresh")
+	}
+	log.Printf("[chat] page responsive after idle refresh")
+	// 页面刷新后 DeepSeek 默认关闭深度思考，需要重新检测并开启
+	h.session.checkToggleStates()
+	h.lastRefresh.Store(time.Now().UnixNano())
+	return nil
+}
+
+// StartIdleRefresher 启动后台空闲保活刷新 goroutine。
+// 每 idleRefreshCheck 检查一次：距离上次请求超过 idleRefreshInterval 且距离上次刷新
+// 超过 idleRefreshInterval 时，主动刷新页面唤醒渲染进程——避免长时间无请求（如收盘到
+// 复盘之间数小时）导致页面进入休眠、请求突然到来时卡顿。
+// 与 sendChat 共用 h.mu：活跃请求期间拿不到锁会跳过，绝不打断进行中的对话；
+// 登录/账号切换期间（loggedIn=false）也会跳过。
+// goroutine 随 session 关闭（browserCtx 取消）自动退出。
+func (h *ChatHandler) StartIdleRefresher() {
+	if h.session == nil {
+		return
+	}
+	sessCtx := h.session.Context()
+	go func() {
+		ticker := time.NewTicker(idleRefreshCheck)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-sessCtx.Done():
+				log.Println("[chat] idle refresher stopped")
+				return
+			case <-ticker.C:
+				if !h.shouldRefreshPage() {
+					continue
+				}
+				h.mu.Lock()
+				// 拿锁后重新检查：等待锁期间可能有请求完成并更新了 lastActivity
+				if h.shouldRefreshPage() {
+					if err := h.refreshPageLocked(); err != nil {
+						log.Printf("[chat] idle refresh failed: %v", err)
+					}
+				}
+				h.mu.Unlock()
+			}
+		}
+	}()
 }
 
 // getDirectText 获取元素直接文本节点内容（排除子元素嵌套文本），避免 radio button 文本重复问题
@@ -667,6 +862,35 @@ func (h *ChatHandler) saveBase64Image(dataURL string) (string, error) {
 	return filePath, nil
 }
 
+// checkSendBtnReadyJS 判断发送按钮是否可用（CDP 实测 2026-08-09）：
+// 发送按钮为 div.ds-button--primary，上传文件/图片过程中 className 含 ds-button--disabled（禁用），
+// 上传完成后立即移除（可用）。aria-disabled / disabled 属性实测全程无变化，不可用作判断信号。
+const checkSendBtnReadyJS = `(()=>{
+	const btns = document.querySelectorAll('div.ds-button--primary');
+	for (const b of btns) {
+		const r = b.getBoundingClientRect();
+		if (r.width === 0 && r.height === 0) continue;
+		if (!(b.className || '').includes('ds-button--disabled')) return true;
+	}
+	return false;
+})()`
+
+// waitSendBtnReady 等待发送按钮恢复可用（上传完成信号）。
+// 返回 true=按钮已可用；超时返回 false（只告警不中断，走原有流程）。
+func (h *ChatHandler) waitSendBtnReady(timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		var ready bool
+		if err := chromedp.Run(h.session.Context(),
+			chromedp.Evaluate(checkSendBtnReadyJS, &ready),
+		); err == nil && ready {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
 func (h *ChatHandler) uploadImage(filePath string) error {
 	err := chromedp.Run(h.session.Context(),
 		chromedp.SetUploadFiles(`input[type="file"]`, []string{filePath}, chromedp.ByQuery),
@@ -692,45 +916,10 @@ func (h *ChatHandler) uploadImage(filePath string) error {
 		log.Println("[chat] no preview detected, waiting extra time")
 		time.Sleep(1 * time.Second)
 	}
-	time.Sleep(uploadDelay)
-	return nil
-}
-
-// uploadTextFile 将长文本保存为临时文件并上传，避免 textarea 撑大导致发送按钮不可见
-func (h *ChatHandler) uploadTextFile(text string) error {
-	tmpDir := os.TempDir()
-	filePath := filepath.Join(tmpDir, fmt.Sprintf("ds_message_%d.txt", time.Now().UnixNano()))
-	if err := os.WriteFile(filePath, []byte(text), 0644); err != nil {
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	defer os.Remove(filePath)
-
-	log.Printf("[chat] uploading text file (%d chars)", len([]rune(text)))
-
-	if err := chromedp.Run(h.session.Context(),
-		chromedp.SetUploadFiles(`input[type="file"]`, []string{filePath}, chromedp.ByQuery),
-	); err != nil {
-		return fmt.Errorf("set upload file: %w", err)
-	}
-
-	log.Println("[chat] waiting for file upload...")
-	time.Sleep(1 * time.Second)
-
-	// 输入简短提示并发送，保持 textarea 短小让按钮可见
-	prompt := "请处理附件中的内容"
-	if err := h.clearTextarea(); err != nil {
-		return fmt.Errorf("clear textarea for prompt: %w", err)
-	}
-	if err := h.typeText(prompt); err != nil {
-		return fmt.Errorf("type prompt: %w", err)
-	}
-
-	stillInBox, err := h.pressEnter()
-	if err != nil {
-		return fmt.Errorf("press enter after file upload: %w", err)
-	}
-	if stillInBox {
-		return h.ensureMessageSent()
+	// [Fix 2026-08-09] 等发送按钮恢复可用（CDP 实测：上传完成按钮立即从禁用变可用，
+	// 比固定等待更准确——大文件不会提前，小文件不会白等）。超时只告警不中断
+	if !h.waitSendBtnReady(sendBtnReadyTimeout) {
+		log.Printf("[chat] warn: send button not ready within %v after image upload", sendBtnReadyTimeout)
 	}
 	return nil
 }
@@ -763,7 +952,11 @@ func (h *ChatHandler) injectInterceptor() error {
 		log.Printf("[chat] wait for old stream done: %v (continuing)", err)
 	}
 
-	// 第一次重置所有捕获变量
+	// 重置所有捕获变量 + 重新注入 DOM 观察器（清除旧 setInterval，重置 __dsBrowserDOMDone）
+	// [Fix 2026-07-31] 同步设置 __dsArticleBaseline 为当前 article 数
+	// 原因：scan 函数在 observeCaptureScript 注入后立即执行，如果此时 __dsArticleBaseline 还是上一轮的值，
+	// 上一轮回复后的 article 数 > 旧 baseline → scan 会继续扫描按钮 → 找到上一轮的15个按钮 → 误设 domDone=true
+	// 解决：在重置 domDone 的同时把 baseline 设为当前 article 数，scan 第一次执行时就会因 articles.length <= baseline 而跳过
 	if err := chromedp.Run(h.session.Context(),
 		chromedp.Evaluate(`(()=>{
 			window.__dsBrowserCapture = '';
@@ -773,7 +966,9 @@ func (h *ChatHandler) injectInterceptor() error {
 			window.__dsCurrentFragmentType = '';
 			window.__dsConvLimitHit = false;
 			window.__dsServerBusy = false;
+			window.__dsArticleBaseline = document.querySelectorAll('[class*="ds-markdown"]').length;
 		})()`, nil),
+		chromedp.Evaluate(observeCaptureScript, nil),
 	); err != nil {
 		return err
 	}
@@ -846,6 +1041,11 @@ func (h *ChatHandler) waitForCaptureStable(timeout time.Duration) {
 }
 
 func (h *ChatHandler) sendMessage(text string) error {
+	// 记录发送前的文章数，用于后续定位最新回复的复制按钮
+	chromedp.Run(h.session.Context(),
+		chromedp.Evaluate(`window.__dsArticleBaseline = document.querySelectorAll('[class*="ds-markdown"]').length`, nil),
+	)
+
 	log.Printf("[chat] preparing to type %d chars", len([]rune(text)))
 	if err := h.clearTextarea(); err != nil {
 		return fmt.Errorf("clear textarea: %w", err)
@@ -853,6 +1053,9 @@ func (h *ChatHandler) sendMessage(text string) error {
 	if err := h.typeText(text); err != nil {
 		return fmt.Errorf("type text: %w", err)
 	}
+	// 模拟人类输入完成后的随机停顿（500-2000ms），给 React 时间处理输入事件，让发送按钮变为可用状态
+	humanDelay := time.Duration(500+rand.Intn(1500)) * time.Millisecond
+	time.Sleep(humanDelay)
 	stillInBox, err := h.pressEnter()
 	if err != nil {
 		return fmt.Errorf("press enter: %w", err)
@@ -863,46 +1066,32 @@ func (h *ChatHandler) sendMessage(text string) error {
 	return nil
 }
 
-// sendMessageOrUpload 根据文本长度自动选择 typing 或文件上传（供重试路径使用，支持已有附件）
+// sendMessageOrUpload 发送消息，支持已有附件（供重试路径使用）
 func (h *ChatHandler) sendMessageOrUpload(text string, files []string) error {
-	// 合并可能的长文本文件与已有附件
-	var paths []string
-	if len(files) > 0 {
-		paths = make([]string, len(files))
-		copy(paths, files)
-	}
-	if len([]rune(text)) > fileUploadThreshold {
-		tmpPath := filepath.Join(os.TempDir(), fmt.Sprintf("ds_message_%d.txt", time.Now().UnixNano()))
-		if err := os.WriteFile(tmpPath, []byte(text), 0644); err != nil {
-			return fmt.Errorf("write temp text: %w", err)
-		}
-		defer os.Remove(tmpPath)
-		paths = append(paths, tmpPath)
-	}
+	// 记录发送前的文章数，用于后续定位最新回复的复制按钮
+	chromedp.Run(h.session.Context(),
+		chromedp.Evaluate(`window.__dsArticleBaseline = document.querySelectorAll('[class*="ds-markdown"]').length`, nil),
+	)
 
 	// 有附件需要上传时，统一 SetUploadFiles 后再发送提示文字
-	if len(paths) > 0 {
-		log.Printf("[chat] retry uploading %d file(s)", len(paths))
+	if len(files) > 0 {
+		log.Printf("[chat] retry uploading %d file(s)", len(files))
 		if err := chromedp.Run(h.session.Context(),
-			chromedp.SetUploadFiles(`input[type="file"]`, paths, chromedp.ByQuery),
+			chromedp.SetUploadFiles(`input[type="file"]`, files, chromedp.ByQuery),
 		); err != nil {
 			return fmt.Errorf("upload files: %w", err)
 		}
 		time.Sleep(1 * time.Second)
 
-		prompt := text
-		if len([]rune(text)) > fileUploadThreshold {
-			prompt = "请处理附件中的内容"
-		}
-		if prompt == "" {
-			prompt = "请处理附件中的内容"
-		}
+		prompt := "请处理附件中的内容"
 		if err := h.clearTextarea(); err != nil {
 			return fmt.Errorf("clear textarea: %w", err)
 		}
 		if err := h.typeText(prompt); err != nil {
 			return fmt.Errorf("type prompt: %w", err)
 		}
+		// 模拟人类输入完成后的随机停顿
+		time.Sleep(time.Duration(500+rand.Intn(1500)) * time.Millisecond)
 		stillInBox, err := h.pressEnter()
 		if err != nil {
 			return fmt.Errorf("press enter: %w", err)
@@ -967,7 +1156,11 @@ func (h *ChatHandler) typeText(text string) error {
 			})()`, string(encodedChunk)), &chunkLen),
 		)
 		if err != nil {
+			// [Fix 2026-08-08] 输入失败必须立即返回错误，不能继续输入后续分块。
+			// 否则会在连接断开/页面失效的状态下继续"假装成功"输入，导致消息实际未发送，
+			// 程序却进入等待回复的死循环。返回错误后由 sendChat 走 NavigateHome+重试兜底。
 			log.Printf("[chat] type chunk error: %v", err)
+			return fmt.Errorf("type chunk: %w", err)
 		}
 		time.Sleep(typeDelay)
 	}
@@ -976,8 +1169,27 @@ func (h *ChatHandler) typeText(text string) error {
 }
 
 func (h *ChatHandler) pressEnter() (bool, error) {
+	// [Fix 2026-08-08] 不再用 chromedp.SendKeys("\r") 发送 Enter：
+	// chromedp 键盘编码表对 '\r' 会生成 keyDown + char(text="\r") + keyUp 三个事件，
+	// 其中 char 事件会把 "\r" 当作文本插入 textarea（变成换行符 \n），
+	// 导致：1) textarea 残留 \n 让 isTextareaStillFilled 误判发送失败；2) 按钮因此被判定不可用。
+	// 改为手动发送 keyDown + keyUp（无 char 事件），Enter 一次即可发送成功。
+	// 依据：CDP 实验验证——带 char 事件 100% 残留 \n 失败；仅 keyDown+keyUp 100% 成功。
 	err := chromedp.Run(h.session.Context(),
-		chromedp.SendKeys("textarea", "\r", chromedp.ByQuery),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			// 与 SendKeys 一致：先聚焦 textarea，确保 Enter 事件送达输入框
+			if err := chromedp.Evaluate(`(()=>{const ta=document.querySelector('textarea');if(ta)ta.focus();})()`, nil).Do(ctx); err != nil {
+				log.Printf("[chat] pressEnter focus error: %v", err)
+			}
+			if err := input.DispatchKeyEvent(input.KeyDown).
+				WithKey("Enter").WithCode("Enter").
+				WithWindowsVirtualKeyCode(13).WithNativeVirtualKeyCode(13).Do(ctx); err != nil {
+				return err
+			}
+			return input.DispatchKeyEvent(input.KeyUp).
+				WithKey("Enter").WithCode("Enter").
+				WithWindowsVirtualKeyCode(13).WithNativeVirtualKeyCode(13).Do(ctx)
+		}),
 	)
 	if err != nil {
 		log.Printf("[chat] Enter key error: %v", err)
@@ -1312,12 +1524,7 @@ func (h *ChatHandler) isTextareaStillFilled() bool {
 
 func (h *ChatHandler) waitForResponse(ctx context.Context, timeout time.Duration, question string) (content string, thinking string, convLimit bool, serverBusy bool, err error) {
 	deadline := time.Now().Add(timeout)
-	zeroCharCount := 0
-	totalPolls := 0 // 总轮询次数，不被重置，用于60秒兜底
-	recoveryTriggered := false
-	pollCount := 0
 	for time.Now().Before(deadline) {
-		pollCount++
 		select {
 		case <-ctx.Done():
 			return "", "", false, false, ctx.Err()
@@ -1332,22 +1539,48 @@ func (h *ChatHandler) waitForResponse(ctx context.Context, timeout time.Duration
 				t: window.__dsBrowserThinking || '',
 				lim: window.__dsConvLimitHit || false,
 				busy: window.__dsServerBusy || false,
-				ptypes: window.__dsBrowserPTypes || {}
+				ptypes: window.__dsBrowserPTypes || {},
+			unknownSamples: window.__dsBrowserUnknownSamples || []
 			})`, &result),
 		)
 		if err == nil && result != "" {
 			var r struct {
-				D      bool           `json:"d"`
-				DD     bool           `json:"dd"`
-				C      string         `json:"c"`
-				T      string         `json:"t"`
-				Lim    bool           `json:"lim"`
-				Busy   bool           `json:"busy"`
-				PTypes map[string]int `json:"ptypes"`
+				D              bool           `json:"d"`
+				DD             bool           `json:"dd"`
+				C              string         `json:"c"`
+				T              string         `json:"t"`
+				Lim            bool           `json:"lim"`
+				Busy           bool           `json:"busy"`
+				PTypes         map[string]int `json:"ptypes"`
+				UnknownSamples []string       `json:"unknownSamples"`
 			}
 			if json.Unmarshal([]byte(result), &r) == nil && r.C != "" && (r.D || r.DD) {
 				log.Printf("[chat] captured: %d chars, thinking: %d chars (netDone=%v domDone=%v, convLimit=%v, serverBusy=%v, ptypes=%v)",
 					len([]rune(r.C)), len([]rune(r.T)), r.D, r.DD, r.Lim, r.Busy, r.PTypes)
+				if len(r.UnknownSamples) > 0 {
+					log.Printf("[chat] unknown SSE events (first 5): %v", r.UnknownSamples)
+				}
+				// [Fix 2026-07-31] 兜底：DOM 已完成但拦截器只截到少量字符
+				// 如果是错误提示（convLimit/serverBusy），直接返回让上层处理，不走复制按钮
+				// 否则说明拦截器可能失效，用复制按钮接管获取完整内容
+				if r.DD && !r.D && len([]rune(r.C)) < 50 {
+					if hasConvLimit(r.C) {
+						log.Printf("[chat] convLimit in short interceptor content: %d chars, returning early", len([]rune(r.C)))
+						return r.C, "", true, false, nil
+					}
+					if hasServerBusy(r.C) {
+						log.Printf("[chat] serverBusy in short interceptor content: %d chars, returning early", len([]rune(r.C)))
+						return r.C, "", false, true, nil
+					}
+					log.Printf("[chat][WARN] DOM done but interceptor only %d chars (likely incomplete), trying copy button fallback", len([]rune(r.C)))
+					fb, fbErr := h.fetchContentViaCopyButton()
+					if fbErr == nil && fb != "" {
+						log.Printf("[chat] captured (copy-btn fallback): %d chars (replaced %d chars from interceptor)", len([]rune(fb)), len([]rune(r.C)))
+						log.Printf("[chat][diag] capture FALLBACK (%d chars): %q", len([]rune(fb)), truncateForLog(fb, 800))
+						return fb, "", r.Lim, r.Busy, nil
+					}
+					log.Printf("[chat][WARN] copy button fallback failed: %v, returning intercepted content", fbErr)
+				}
 				// 保存原始 SSE 用于调试
 				var rawSSE string
 				chromedp.Run(h.session.Context(),
@@ -1356,80 +1589,136 @@ func (h *ChatHandler) waitForResponse(ctx context.Context, timeout time.Duration
 				if len(rawSSE) > 0 {
 					os.WriteFile(filepath.Join(os.TempDir(), "ds_raw_sse.txt"), []byte(rawSSE), 0644)
 				}
-				c := deduplicateContent(r.C, question)
+				// [Fix 2026-07-19] 截取 JSON 主体，丢弃 DeepSeek 在 JSON 后追加的"对话标题"
+				// 根因：DeepSeek 在 AI 回复完成后，通过同一 SSE 流追加对话标题（如 "301277次日观望"），
+				// 被拦截器当作回复内容捕获，导致 JSON 后多出非 JSON 文字，客户端解析失败。
+				trimmedC := trimTrailingExtra(r.C)
+				if len(trimmedC) != len(r.C) {
+					log.Printf("[chat] trimmed trailing extra: %d -> %d chars (removed %d chars)",
+						len([]rune(r.C)), len([]rune(trimmedC)), len([]rune(r.C))-len([]rune(trimmedC)))
+				}
+				c := deduplicateContent(trimmedC, question)
 				t := deduplicateContent(r.T, question)
+				// [诊断日志 2026-07-19] 记录 capture 原始内容和 dedup 后内容，用于定位 JSON 解析失败根因
+				log.Printf("[chat][diag] capture RAW (%d chars): %q", len([]rune(r.C)), truncateForLog(r.C, 800))
+				log.Printf("[chat][diag] capture DEDUP (%d chars): %q", len([]rune(c)), truncateForLog(c, 800))
 				return c, t, r.Lim, r.Busy, nil
 			}
+			// [Fix 2026-07-31] 兜底：DOM 观察器认为回复完成但拦截器没截到内容
+			// 场景：SSE 拦截器偶发失效（__dsBrowserDone=false, __dsBrowserCapture=""），
+			// 但 AI 实际已在网页上完整回复（__dsBrowserDOMDone=true）
+			// 不加此分支会陷入死循环：r.C=="" 跳过 captured 分支，r.DD==true 跳过 waiting 分支
+			// 复用现有 fetchContentViaCopyButton：点击复制按钮读取 ds-assistant-message-main-content
+			// 该元素只含 AI 回复正文，不含"本回答由 AI 生成"提示和 5 个按钮文字
+			if r.DD && r.C == "" {
+				log.Printf("[chat][WARN] DOM done but interceptor empty, trying copy button fallback")
+				if fb, fbErr := h.fetchContentViaCopyButton(); fbErr == nil && fb != "" {
+					log.Printf("[chat] captured (copy-btn fallback): %d chars", len([]rune(fb)))
+					log.Printf("[chat][diag] capture FALLBACK (%d chars): %q", len([]rune(fb)), truncateForLog(fb, 800))
+					return fb, "", r.Lim, r.Busy, nil
+				}
+				// 复制按钮也失败 → 报错，不再死循环
+				return "", "", false, false, fmt.Errorf("DOM done but interceptor empty and copy button fallback failed")
+			}
+			// [Fix 2026-07-31] 兜底：SSE 流结束标志已置位但拦截器没截到内容
+			// 场景：__dsBrowserDone=true 但 __dsBrowserCapture=""（拦截器异常）
+			// 同样会陷入死循环，直接报错让上层处理
+			if r.D && r.C == "" {
+				return "", "", false, false, fmt.Errorf("stream done but interceptor empty")
+			}
 			if !r.D && !r.DD {
-				log.Printf("[chat] waiting... %d chars so far", len([]rune(r.C)))
-				zeroCharCount++
-				totalPolls++
-				// 每 30 秒（约 100 次）输出一次页面文本用于调试，并尝试恢复
-				if zeroCharCount == 100 {
-					zeroCharCount = 0
-					log.Printf("[debug] 30s with 0 chars, checking page state...")
-					var recoveryInfo string
-					chromedp.Run(h.session.Context(),
-						chromedp.Evaluate(`
-							(function() {
-								// 用 innerHTML 搜索（比 textContent 更完整）
-								var html = (document.body && document.body.innerHTML || '').substring(0, 5000);
-								var busyKeywords = ['消息发送过于频繁', '发送过于频繁', '服务器繁忙', '服务繁忙', '请稍后重试'];
-								var limitKeywords = ['达到对话长度上限', '请开启新对话', '对话长度上限'];
-								for (var i = 0; i < busyKeywords.length; i++) {
-									if (html.indexOf(busyKeywords[i]) !== -1) {
-										return 'serverBusy:' + busyKeywords[i];
-									}
-								}
-								for (var i = 0; i < limitKeywords.length; i++) {
-									if (html.indexOf(limitKeywords[i]) !== -1) {
-										return 'convLimit:' + limitKeywords[i];
-									}
-								}
-								var ta = document.querySelector('textarea');
-								var taEmpty = !ta || ta.value.trim() === '';
-								return 'noError:taEmpty=' + taEmpty;
-							})()
-						`, &recoveryInfo),
-					)
-					log.Printf("[debug] recovery check: %s", recoveryInfo)
-					if strings.HasPrefix(recoveryInfo, "serverBusy:") {
-						log.Printf("[debug] found serverBusy in HTML, triggering recovery")
-						return strings.TrimPrefix(recoveryInfo, "serverBusy:"), "", false, true, nil
-					}
-					if strings.HasPrefix(recoveryInfo, "convLimit:") {
-						log.Printf("[debug] found convLimit in HTML, triggering recovery")
-						return strings.TrimPrefix(recoveryInfo, "convLimit:"), "", true, false, nil
-					}
-					recoveryTriggered = true
-				}
-				// 60 秒后仍未恢复（totalPolls 约200次），自动切换账号作为最后手段
-				if recoveryTriggered && totalPolls >= 200 {
-					log.Printf("[debug] 60s with 0 chars, auto-switching account as last resort")
-					return "", "", false, true, nil
+				// [Fix 2026-07-31] capture 为空但 thinking 有内容时，显示思考进度，避免误以为卡死
+				if len([]rune(r.T)) > 0 {
+					log.Printf("[chat] AI thinking... %d chars", len([]rune(r.T)))
+				} else {
+					log.Printf("[chat] waiting... %d chars so far", len([]rune(r.C)))
 				}
 			}
 		}
-		// DOM 检测：每5轮（1.5秒）执行一次，减少性能开销
-		if !serverBusy && !convLimit && pollCount%5 == 0 {
-			var domText string
-			domErr := chromedp.Run(h.session.Context(),
-				chromedp.Evaluate(errorDetectJS, &domText),
-			)
-			if domErr == nil && domText != "" {
-				parts := strings.SplitN(domText, ":", 2)
-				if len(parts) == 2 {
-					log.Printf("[chat] detected UI toast: %s", domText)
-					if parts[0] == "convLimit" {
-						return parts[1], "", true, false, nil
-					}
-					return parts[1], "", false, true, nil
-				}
-			}
-		}
+		// [Fix 2026-07-18] 移除 errorDetectJS 调用
+		// 系统提示只在 0-3 秒内出现，由 detectImmediateError 覆盖
+		// waitForResponse 阶段 AI 正在回复，errorDetectJS 会误扫 AI 回复内容
 		time.Sleep(pollInterval)
 	}
 	return "", "", false, false, fmt.Errorf("timeout waiting for response after %v", timeout)
+}
+
+// truncateForLog 截取字符串用于日志输出，避免日志过长
+func truncateForLog(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "...[TRUNCATED]"
+}
+
+// trimTrailingExtra 截取 JSON 主体，丢弃 JSON 结束后追加的额外文字
+// 场景：DeepSeek 在 AI 回复完成后，通过同一 SSE 流追加"对话标题"（如 "301277次日观望"），
+// 被拦截器当作回复内容捕获，导致 JSON 后多出一段非 JSON 文字，客户端解析失败。
+// 做法：如果 content 以 { 或 [ 开头，用括号配对找到 JSON 真正结束位置，丢弃后面的内容。
+// 安全约束：只处理字符串字面量外的括号配对，避免被 JSON 字符串里的括号干扰。
+func trimTrailingExtra(content string) string {
+	if len(content) == 0 {
+		return content
+	}
+	// 找第一个非空白字符
+	start := 0
+	for start < len(content) && (content[start] == ' ' || content[start] == '\t' || content[start] == '\n' || content[start] == '\r') {
+		start++
+	}
+	if start >= len(content) {
+		return content
+	}
+	var open, close byte
+	switch content[start] {
+	case '{':
+		open, close = '{', '}'
+	case '[':
+		open, close = '[', ']'
+	default:
+		// 不是 JSON 开头，不处理
+		return content
+	}
+	// 用括号配对找 JSON 结束位置，跳过字符串字面量内的括号
+	depth := 0
+	inString := false
+	escape := false
+	for i := start; i < len(content); i++ {
+		ch := content[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if inString {
+			if ch == '\\' {
+				escape = true
+			} else if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+		if ch == '"' {
+			inString = true
+			continue
+		}
+		if ch == open {
+			depth++
+		} else if ch == close {
+			depth--
+			if depth == 0 {
+				// JSON 主体结束于位置 i（含）
+				rest := strings.TrimSpace(content[i+1:])
+				if rest == "" {
+					// 后面没有额外文字，原样返回
+					return content
+				}
+				// 后面有额外文字，截取到 JSON 结束位置
+				return content[:i+1]
+			}
+		}
+	}
+	// 括号没配平（JSON 不完整），不处理
+	return content
 }
 
 func deduplicateContent(content string, question string) string {
@@ -1469,27 +1758,17 @@ func deduplicateSingleLineRepeat(line string, question string) string {
 	runes := []rune(line)
 	n := len(runes)
 
-	// 模式3：剥离问题回显（XHR 拦截器可能将对话标题追加到 capture 末尾）
-	// 场景：capture="42+2"，question="2+2=?"，末尾"2+2"是问题子串，剥离后得到"4"
-	// 安全约束：capture <= 30 字符，问题文本非空，匹配子串 >= 3 字符，剥离后剩余 >= 1 字符
-	// 注：此模式在 n<6 检查之前执行，因为短答案（如"42+2"只有4字符）也需要处理
-	// 匹配使用大小写不敏感，且要求匹配子串在问题中位于词边界（避免"llo"误匹配"hello"的子串）
-	if question != "" && n >= 4 && n <= 30 {
-		lowerQ := strings.ToLower(question)
-		// 从 capture 末尾查找最长的问题子串匹配
-		for matchLen := n - 1; matchLen >= 3; matchLen-- {
-			captureSuffix := string(runes[n-matchLen:])
-			lowerSuffix := strings.ToLower(captureSuffix)
-			idx := strings.Index(lowerQ, lowerSuffix)
-			// 要求匹配子串在问题中位于词边界（开头或前面是空格/标点）
-			if idx >= 0 && (idx == 0 || lowerQ[idx-1] == ' ' || lowerQ[idx-1] == '.' || lowerQ[idx-1] == '?' || lowerQ[idx-1] == '!') {
-				remaining := string(runes[:n-matchLen])
-				if len([]rune(remaining)) >= 1 {
-					return remaining
-				}
-			}
-		}
-	}
+	// 模式3：[Disabled 2026-07-20] 剥离问题回显（XHR 拦截器可能将对话标题追加到 capture 末尾）
+	// 原设计：capture="42+2"，question="2+2=?"，末尾"2+2"是问题子串，剥离后得到"4"
+	// 禁用原因：该模式对每一行单独处理，会误删 JSON 字段值。例如：
+	//   - 行 `  "order_type": "LIMIT",` 末尾 `"LIMIT",` 在 question 中能找到 → 被删
+	//   - 行 `  "next_day_expect": {`     整行在 question 中能找到 → 被删
+	//   - 行 `  "plan_price": 6.11,`      末尾 `6.11,` 在 question 中能找到 → 被删
+	// 该模式的原始目标（处理 JSON 后追加的对话标题）已由 trimTrailingExtra 接管，
+	// trimTrailingExtra 用括号配对精确识别 JSON 边界，只删除整个 JSON 结束后的额外文字，不会破坏 JSON 内部结构。
+	// if question != "" && n >= 4 && n <= 30 {
+	// 	...（已禁用，原代码保留在注释中作为参考）
+	// }
 
 	if n < 6 {
 		return line
@@ -1596,6 +1875,12 @@ func isMarkdownSeparator(line string) bool {
 
 func (h *ChatHandler) NewConversation(ctx context.Context) error {
 	log.Println("[chat] starting new conversation")
+	// 重置对话计数，生成新的随机阈值（30-60）
+	h.convMsgCount.Store(0)
+	threshold := int64(30 + rand.Intn(31))
+	h.convMsgThreshold.Store(threshold)
+	log.Printf("[chat] new conv threshold: %d", threshold)
+
 	var found bool
 	err := chromedp.Run(h.session.Context(),
 		chromedp.Evaluate(`(()=>{
@@ -1624,6 +1909,8 @@ func (h *ChatHandler) NewConversation(ctx context.Context) error {
 	if found {
 		log.Println("[chat] new conversation started via UI click")
 		h.waitForEmptyTextarea(3 * time.Second)
+		// 新对话后 DeepSeek 默认关闭深度思考，需要重新检测并开启
+		h.session.checkToggleStates()
 		return nil
 	}
 	log.Println("[chat] UI element not found, trying Ctrl+J")
@@ -1638,6 +1925,8 @@ func (h *ChatHandler) NewConversation(ctx context.Context) error {
 	}
 	if h.waitForEmptyTextarea(3 * time.Second) {
 		log.Println("[chat] new conversation confirmed (empty chat)")
+		// 新对话后 DeepSeek 默认关闭深度思考，需要重新检测并开启
+		h.session.checkToggleStates()
 		return nil
 	}
 	log.Println("[chat] Ctrl+J may not have worked, navigating home")
@@ -1706,35 +1995,161 @@ func (h *ChatHandler) prepareForRetry(ctx context.Context, mode string, images [
 }
 
 // detectImmediateError 消息发送后立即检测页面错误提示
+// [Fix 2026-07-31] 改为只检查新增 ds-message，不再全页面扫描
+// __dsMessageBaseline 在 sendMessage 时已设置
+// 检测窗口 3 秒：系统提示一定在"正在思考"之前出现，只在前 3 秒内检测
+// 检测到"正在思考/已思考"时早停（AI 正常工作）
 func (h *ChatHandler) detectImmediateError() (string, string) {
-	for range 15 {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
 		var domText string
 		domErr := chromedp.Run(h.session.Context(),
 			chromedp.Evaluate(errorDetectJS, &domText),
 		)
 		if domErr == nil && domText != "" {
+			if domText == "thinking" {
+				log.Printf("[chat] AI thinking detected (DOM), early exit")
+				return "", ""
+			}
 			parts := strings.SplitN(domText, ":", 2)
 			if len(parts) == 2 {
 				return parts[0], parts[1]
 			}
 			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
+
+	// 3 秒内未检测到系统提示——系统提示一定在"正在思考"之前出现，没有系统提示说明请求正常
+	// 继续进入正常等待回复流程
+	log.Printf("[chat] detectImmediateError: 3s passed, no error detected, continuing")
+
 	return "", ""
+}
+
+// logDiagInfo 读取 window.__dsDiagLog 并打印到日志
+// 用于在系统提示出现时捕获 DOM 结构证据
+func logDiagInfo(h *ChatHandler, promptType, keyword string) {
+	var diagInfo string
+	chromedp.Run(h.session.Context(),
+		chromedp.Evaluate(`window.__dsDiagLog || ''`, &diagInfo),
+	)
+	if diagInfo != "" {
+		log.Printf("[diag] system prompt detected: type=%s keyword=%s, domInfo=%s", promptType, keyword, diagInfo)
+	} else {
+		log.Printf("[diag] system prompt detected: type=%s keyword=%s, but domInfo is empty", promptType, keyword)
+	}
+}
+
+// fetchContentViaCopyButton 通过点击 DeepSeek 页面上的复制按钮获取回复内容
+// 当拦截器捕获的内容不可信时（空内容），作为兜底方案
+// 原理：找到最后一个 ds-message 中的复制按钮 → CDP 点击 → 读取文章 textContent
+// 复制按钮在 ds-message 容器内（不在 ds-markdown 内部），通过 SVG 2个 <path> 识别
+func (h *ChatHandler) fetchContentViaCopyButton() (string, error) {
+	// [Fix 2026-07-31] 基线检查：确认本轮有新回复，避免读到上一轮的旧内容
+	// __dsArticleBaseline 在 sendMessage/sendMessageOrUpload 时记录（发送前的 ds-markdown 数量）
+	// 如果当前 ds-markdown 数量 <= baseline，说明本轮 AI 还没输出新回复，不读旧内容
+	var hasNewReply bool
+	chromedp.Run(h.session.Context(),
+		chromedp.Evaluate(`(document.querySelectorAll('[class*="ds-markdown"]').length > (window.__dsArticleBaseline || 0))`, &hasNewReply),
+	)
+	if !hasNewReply {
+		log.Printf("[chat][WARN] copy button fallback: no new reply since request (baseline not exceeded)")
+		return "", fmt.Errorf("no new reply since request")
+	}
+
+	// 1. 注入剪贴板钩子：拦截 navigator.clipboard.writeText
+	chromedp.Run(h.session.Context(),
+		chromedp.Evaluate(`(()=>{
+			if (!window.__dsClipboardHooked) {
+				var orig = navigator.clipboard.writeText.bind(navigator.clipboard);
+				navigator.clipboard.writeText = function(text) {
+					window.__dsCopyContent = text;
+					return orig(text);
+				};
+				window.__dsClipboardHooked = true;
+			}
+			window.__dsCopyContent = '';
+			return true;
+		})()`, nil),
+	)
+
+	// 2. 找最后一个 ds-message 中的复制按钮，点击后读取文章文本内容
+	// 复制按钮在 ds-message 容器内（不在 ds-markdown 内部），只取最后一个消息避免误点击
+	// 注意：程序化点击不触发 Clipboard API，所以点完按钮后直接读文章 textContent
+	var clicked bool
+	chromedp.Run(h.session.Context(),
+		chromedp.Evaluate(`(()=>{
+			function isCopyBtn(btn) {
+				var svg = btn.querySelector('svg');
+				if (!svg) return false;
+				return svg.querySelectorAll('path').length === 2;
+			}
+
+			// 取最后一个 ds-message（最新 AI 回复），在其中查找复制按钮
+			var messages = document.querySelectorAll('[class*="ds-message"]');
+			if (!messages.length) return false;
+			var lastMsg = messages[messages.length - 1];
+			var divs = lastMsg.querySelectorAll('div');
+			for (var i = 0; i < divs.length; i++) {
+				if (isCopyBtn(divs[i])) {
+					divs[i].click();
+					return true;
+				}
+			}
+			return false;
+		})()`, &clicked),
+	)
+
+	if !clicked {
+		return "", fmt.Errorf("copy button not found")
+	}
+
+	// 3. 等待复制完成，然后读取最后一个 ds-message 中 ds-assistant-message-main-content 的文本
+	// ds-message 内部有两个子元素：思考过程 + 回复内容，只取后者
+	time.Sleep(300 * time.Millisecond)
+
+	var content string
+	chromedp.Run(h.session.Context(),
+		chromedp.Evaluate(`(()=>{
+			var messages = document.querySelectorAll('[class*="ds-message"]');
+			if (!messages.length) return '';
+			var lastMsg = messages[messages.length - 1];
+			var mainContent = lastMsg.querySelector('[class*="ds-assistant-message-main-content"]');
+			if (!mainContent) return '';
+			return mainContent.textContent || '';
+		})()`, &content),
+	)
+
+	log.Printf("[chat] copy button fallback: got %d chars", len([]rune(content)))
+	return content, nil
 }
 
 // retryWithAccountSwitch 切换账号后重新发送消息（支持多账号轮询）
 func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, text string, images []string, files []string) (*ChatResponse, error) {
-	accountCount := h.session.AccountCount()
-	log.Printf("[chat] starting account switch retry, total accounts: %d, mode=%q, text_len=%d, images=%d, files=%d",
-		accountCount, mode, len([]rune(text)), len(images), len(files))
+	// 客户端已取消请求，不重试，让客户端自己决定是否重试
+	if ctx.Err() != nil {
+		log.Printf("[chat] retryWithAccountSwitch: client canceled, skipping retry")
+		return nil, ctx.Err()
+	}
+	// [账号质量管理] 进入重试说明当前账号触发了系统限制，记录当前账号的限制触发次数
+	// 必须在 SwitchAccount 调用前记录，否则 currentEmail 已被切换
+	if email := h.session.currentEmail; email != "" {
+		h.session.stats.RecordLimitTrigger(email)
+		log.Printf("[chat] recorded limit trigger for account: %s", email)
+	}
+	accountCount := h.session.AvailableAccountCount()
+	totalAccounts := h.session.AccountCount()
+	log.Printf("[chat] starting account switch retry, available accounts: %d/%d, mode=%q, text_len=%d, images=%d, files=%d",
+		accountCount, totalAccounts, mode, len([]rune(text)), len(images), len(files))
 
-	// 只尝试其他账号，不重复登录当前账号（accountCount-1 次）
-	// 如果只有一个账号，则直接返回错误
+	// 只尝试其他可用账号（accountCount-1 次），不重复登录当前账号
+	// 如果可用账号少于2个，则直接返回错误
 	if accountCount <= 1 {
-		log.Printf("[chat] retryWithAccountSwitch: only %d account(s), giving up", accountCount)
-		return nil, fmt.Errorf("服务器繁忙，请稍后重试")
+		disabledCount := totalAccounts - accountCount
+		log.Printf("[chat] retryWithAccountSwitch: only %d available account(s) (%d disabled), giving up",
+			accountCount, disabledCount)
+		return nil, fmt.Errorf("服务器繁忙，可用账号不足（禁用%d个）", disabledCount)
 	}
 
 	// 记录当前页面状态以便诊断
@@ -1760,8 +2175,7 @@ func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, t
 		newEmail, switchErr := h.session.SwitchAccount()
 		if switchErr != nil {
 			log.Printf("[chat] switch account attempt %d failed: %v, trying next account", attempt+1, switchErr)
-			// 前进索引，下次 SwitchAccount 尝试下一个账号
-			h.session.advanceAccountIdx()
+			// SwitchAccount 内部已通过 currentSortedIdx 前进实现跳过，无需外层再前进索引
 			continue
 		}
 		log.Printf("[chat] attempt %d/%d: switched to account: %s", attempt+1, accountCount-1, newEmail)
@@ -1780,14 +2194,21 @@ func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, t
 		// 立即检测（消息发送后 1.5 秒内）
 		errType, errMsg := h.detectImmediateError()
 		if errType == "serverBusy" {
+			logDiagInfo(h, errType, errMsg)
+			// [账号质量管理] 记录当前重试账号的限制触发（SwitchAccount 已切换 currentEmail）
+			if email := h.session.currentEmail; email != "" {
+				h.session.stats.RecordLimitTrigger(email)
+			}
 			log.Printf("[chat] attempt %d failed with serverBusy: %s, will try next account", attempt+1, errMsg)
 			continue
 		}
 		if errType == "convLimit" {
+			logDiagInfo(h, errType, errMsg)
 			log.Printf("[chat] attempt %d hit convLimit, will retry with new conversation", attempt+1)
 			return h.retryWithNewConversation(ctx, mode, text, images, files)
 		}
 		if errType != "" {
+			logDiagInfo(h, errType, errMsg)
 			log.Printf("[chat] attempt %d detected other error: %s:%s", attempt+1, errType, errMsg)
 		}
 
@@ -1800,6 +2221,10 @@ func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, t
 		log.Printf("[chat] attempt %d waitForResponse: content=%d chars, thinking=%d chars, convLimit=%v, serverBusy=%v",
 			attempt+1, len([]rune(content)), len([]rune(thinking)), convLimit, serverBusy)
 		if serverBusy {
+			// [账号质量管理] 记录当前重试账号的限制触发
+			if email := h.session.currentEmail; email != "" {
+				h.session.stats.RecordLimitTrigger(email)
+			}
 			log.Printf("[chat] attempt %d serverBusy from waitForResponse, will try next account", attempt+1)
 			continue
 		}
@@ -1808,11 +2233,21 @@ func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, t
 			return h.retryWithNewConversation(ctx, mode, text, images, files)
 		}
 		if hasServerBusy(content) {
+			// [账号质量管理] 记录当前重试账号的限制触发
+			if email := h.session.currentEmail; email != "" {
+				h.session.stats.RecordLimitTrigger(email)
+			}
 			log.Printf("[chat] attempt %d hasServerBusy in content, will try next account", attempt+1)
 			continue
 		}
 		// 成功
 		log.Printf("[chat] attempt %d succeeded: content=%d chars", attempt+1, len([]rune(content)))
+		if content == "" {
+			log.Printf("[chat] attempt %d empty content, trying copy button fallback", attempt+1)
+			if copyContent, err := h.fetchContentViaCopyButton(); err == nil && copyContent != "" {
+				content = copyContent
+			}
+		}
 		return &ChatResponse{Content: content, Thinking: thinking}, nil
 	}
 
@@ -1822,6 +2257,11 @@ func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, t
 
 // retryWithNewConversation 开启新对话后重新发送消息
 func (h *ChatHandler) retryWithNewConversation(ctx context.Context, mode string, text string, images []string, files []string) (*ChatResponse, error) {
+	// 客户端已取消请求，不重试，让客户端自己决定是否重试
+	if ctx.Err() != nil {
+		log.Printf("[chat] retryWithNewConversation: client canceled, skipping retry")
+		return nil, ctx.Err()
+	}
 	if err := h.NewConversation(ctx); err != nil {
 		log.Printf("[chat] new conversation failed: %v", err)
 		return &ChatResponse{Content: "达到对话长度上限"}, nil
@@ -1845,6 +2285,12 @@ func (h *ChatHandler) retryWithNewConversation(ctx context.Context, mode string,
 	if convLimit || hasConvLimit(content) {
 		log.Printf("[chat] new conversation still hit convLimit, giving up")
 		return &ChatResponse{Content: content, Thinking: thinking}, nil
+	}
+	if content == "" {
+		log.Printf("[chat] new conversation empty content, trying copy button fallback")
+		if copyContent, err := h.fetchContentViaCopyButton(); err == nil && copyContent != "" {
+			content = copyContent
+		}
 	}
 	return &ChatResponse{Content: content, Thinking: thinking}, nil
 }

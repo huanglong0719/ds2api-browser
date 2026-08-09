@@ -13,7 +13,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"ds2api-browser/config"
 
@@ -24,21 +27,40 @@ import (
 )
 
 type Session struct {
-	cfg               *config.Config
-	chromeCmd         *exec.Cmd
-	allocCtx          context.Context
-	allocCancel       context.CancelFunc
-	browserCtx        context.Context
-	browserCancel     context.CancelFunc
-	ctxMu             sync.Mutex
-	loggedIn          bool
-	port              int
-	currentAccountIdx int    // 当前使用的账号索引
-	currentEmail      string // 当前登录的账号邮箱
+	cfg                 *config.Config
+	chromeCmd           *exec.Cmd
+	allocCtx            context.Context
+	allocCancel         context.CancelFunc
+	browserCtx          context.Context
+	browserCancel       context.CancelFunc
+	ctxMu               sync.Mutex
+	loggedIn            atomic.Bool
+	port                int
+	currentAccountIdx   int    // 当前使用的账号索引 (cfg.Accounts 中的位置)
+	currentEmail        string // 当前登录的账号邮箱
+	sessionRequestCount int    // 当前会话成功请求数
+	stats               *StatsManager
+	sortedIndices       []int // 根据质量排序后的账号索引列表
+	currentSortedIdx    int   // 当前在排序列表中的位置
 }
 
 func NewSession(cfg *config.Config) *Session {
-	return &Session{cfg: cfg}
+	s := &Session{
+		cfg:   cfg,
+		stats: NewStatsManager(),
+	}
+	s.reorderAccounts()
+	return s
+}
+
+// reorderAccounts 根据历史统计对账号按质量降序排序
+// 质量分 = 成功请求数 / (1 + 限制触发次数)
+// 登录失败次数 > 0 的账号会被禁用并从排序列表中排除
+func (s *Session) reorderAccounts() {
+	s.sortedIndices = s.stats.GetSortedIndices(s.cfg.Accounts)
+	log.Printf("[session] accounts reordered by quality: %v", s.sortedIndices)
+	// 报告被禁用的账号，提醒用户处理
+	s.stats.LogDisabledAccounts(s.cfg.Accounts)
 }
 
 func (s *Session) Start() error {
@@ -110,10 +132,10 @@ func (s *Session) initContexts() error {
 
 	targetID := s.findDeepSeekTarget()
 	if targetID != "" {
-		s.browserCtx, s.browserCancel = chromedp.NewContext(s.allocCtx, chromedp.WithTargetID(targetID))
+		s.browserCtx, s.browserCancel = s.newBrowserCtx(s.allocCtx, targetID)
 		log.Printf("[session] reusing existing target: %s", targetID)
 	} else {
-		s.browserCtx, s.browserCancel = chromedp.NewContext(s.allocCtx)
+		s.browserCtx, s.browserCancel = s.newBrowserCtx(s.allocCtx, "")
 		log.Println("[session] created new target")
 	}
 
@@ -225,6 +247,36 @@ func (s *Session) setWindowSize(width, height int) {
 	}
 }
 
+// newBrowserCtx 创建带断链诊断能力的 browserCtx：
+// 1. 注册 chromedp 错误回调——连接断开时把底层原因（websocket 关闭码/读取错误）写入日志
+// 2. 监听 target 事件——页面崩溃(TargetCrashed)/销毁(TargetDestroyed)/分离(DetachedFromTarget)写入日志
+// 用途：区分"页面崩了"还是"连接断了"，为断链证据链闭环提供直接证据
+func (s *Session) newBrowserCtx(allocCtx context.Context, targetID target.ID) (context.Context, context.CancelFunc) {
+	opts := []chromedp.ContextOption{
+		chromedp.WithErrorf(func(format string, args ...any) {
+			log.Printf("[chromedp][diag] "+format, args...)
+		}),
+	}
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if targetID != "" {
+		ctx, cancel = chromedp.NewContext(allocCtx, append(opts, chromedp.WithTargetID(targetID))...)
+	} else {
+		ctx, cancel = chromedp.NewContext(allocCtx, opts...)
+	}
+	chromedp.ListenTarget(ctx, func(ev any) {
+		switch e := ev.(type) {
+		case *target.EventTargetCrashed:
+			log.Printf("[session][diag] TARGET CRASHED: targetId=%s status=%s errorCode=%d", e.TargetID, e.Status, e.ErrorCode)
+		case *target.EventTargetDestroyed:
+			log.Printf("[session][diag] TARGET DESTROYED: targetId=%s", e.TargetID)
+		case *target.EventDetachedFromTarget:
+			log.Printf("[session][diag] TARGET DETACHED: sessionId=%s", e.SessionID)
+		}
+	})
+	return ctx, cancel
+}
+
 // resetCtxLocked 在已持有 ctxMu 锁的前提下重置浏览器上下文。
 // 调用方必须先获取 s.ctxMu 锁。
 func (s *Session) resetCtxLocked() {
@@ -244,10 +296,10 @@ func (s *Session) resetCtxLocked() {
 
 	targetID := s.findDeepSeekTarget()
 	if targetID != "" {
-		s.browserCtx, s.browserCancel = chromedp.NewContext(s.allocCtx, chromedp.WithTargetID(targetID))
+		s.browserCtx, s.browserCancel = s.newBrowserCtx(s.allocCtx, targetID)
 		log.Printf("[session] reset: reusing target %s", targetID)
 	} else {
-		s.browserCtx, s.browserCancel = chromedp.NewContext(s.allocCtx)
+		s.browserCtx, s.browserCancel = s.newBrowserCtx(s.allocCtx, "")
 		log.Println("[session] reset: new target")
 	}
 
@@ -261,21 +313,238 @@ func (s *Session) resetCtx() {
 	s.resetCtxLocked()
 }
 
+// diagnoseConnectionLoss 断链瞬间的诊断探针（2026-08-09 用户要求）：
+// 在检测到与浏览器连接断开、准备重启之前，记录当时的确定性状态，用于区分根因：
+//   - browserCtx 的取消原因（chromedp 层错误信息）
+//   - Chrome 进程是否还活着（已退出=外部原因；活着=连接层问题）
+//   - CDP 端口是否还在监听
+//   - 系统物理内存（内存耗尽可能导致 Chrome 进程被系统回收）
+// 调用时机：restartBrowserLocked 最开头、取消旧连接/杀 Chrome 之前，保证记录的是断链当时的真实状态。
+func (s *Session) diagnoseConnectionLoss() {
+	if s.browserCtx != nil {
+		log.Printf("[diag] conn-lost: browserCtx.Err=%v", s.browserCtx.Err())
+	}
+	if s.chromeCmd != nil && s.chromeCmd.Process != nil {
+		pid := s.chromeCmd.Process.Pid
+		log.Printf("[diag] conn-lost: chrome pid=%d alive=%v", pid, s.isProcessAlive(pid))
+	}
+	log.Printf("[diag] conn-lost: port %d listening=%v", s.port, s.isPortListening(s.port))
+	if m := windowsMemoryInfo(); m != nil {
+		log.Printf("[diag] conn-lost: mem total=%dMB avail=%dMB load=%d%%", m.TotalMB, m.AvailMB, m.Load)
+	}
+}
+
+// isProcessAlive 通过 tasklist 检查 PID 对应进程是否存活（Windows）
+func (s *Session) isProcessAlive(pid int) bool {
+	out, err := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/NH").Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), fmt.Sprintf("%d", pid))
+}
+
+// windowsMemoryInfo 获取 Windows 系统物理内存信息（标准库 syscall 直接调用 GlobalMemoryStatusEx，
+// 不依赖第三方 x/sys，避免 vendor 模式缺少依赖）
+type memInfo struct {
+	TotalMB int
+	AvailMB int
+	Load    int
+}
+
+// memoryStatusEx 对应 Windows MEMORYSTATUSEX 结构体
+type memoryStatusEx struct {
+	Length               uint32
+	MemoryLoad           uint32
+	TotalPhys            uint64
+	AvailPhys            uint64
+	TotalPageFile        uint64
+	AvailPageFile        uint64
+	TotalVirtual         uint64
+	AvailVirtual         uint64
+	AvailExtendedVirtual uint64
+}
+
+var (
+	kernel32           = syscall.NewLazyDLL("kernel32.dll")
+	globalMemStatusEx  = kernel32.NewProc("GlobalMemoryStatusEx")
+)
+
+func windowsMemoryInfo() *memInfo {
+	var m memoryStatusEx
+	m.Length = uint32(unsafe.Sizeof(m))
+	r, _, _ := globalMemStatusEx.Call(uintptr(unsafe.Pointer(&m)))
+	if r == 0 {
+		return nil
+	}
+	return &memInfo{
+		TotalMB: int(m.TotalPhys / (1024 * 1024)),
+		AvailMB: int(m.AvailPhys / (1024 * 1024)),
+		Load:    int(m.MemoryLoad),
+	}
+}
+
+// restartBrowserLocked 彻底重启 Chrome 浏览器（保留用户数据目录，登录态不丢）。
+// 在检测到与浏览器的连接真正断开时调用（如 CDP websocket 丢失，chromedp 会自动取消 context）。
+// 调用方必须持有 s.ctxMu 锁（与 resetCtxLocked 相同）。
+// 重启后创建全新连接上下文并导航回 DeepSeek 首页；登录态保存在 profile 目录中，无需重新登录。
+func (s *Session) restartBrowserLocked() error {
+	log.Println("[session] browser connection lost, restarting Chrome...")
+	// [Fix 2026-08-09] 断链诊断探针：记录断链瞬间 Chrome 存活/端口/内存状态，
+	// 用于下次断链时区分根因（外部原因 vs 连接层问题），必须在杀 Chrome 之前执行
+	s.diagnoseConnectionLoss()
+
+	// 1. 取消旧连接上下文
+	if s.browserCancel != nil {
+		s.browserCancel()
+	}
+	if s.allocCancel != nil {
+		s.allocCancel()
+	}
+	s.browserCtx, s.browserCancel = nil, nil
+	s.allocCtx, s.allocCancel = nil, nil
+
+	// 2. 结束旧 Chrome 进程（先 Kill，再 taskkill 兜底清理端口占用）
+	if s.chromeCmd != nil && s.chromeCmd.Process != nil {
+		_ = s.chromeCmd.Process.Kill()
+		_ = s.chromeCmd.Wait() // 回收进程资源
+	}
+	for _, proc := range s.findProcessOnPort(s.port) {
+		if proc != 0 {
+			log.Printf("[session] restart: killing PID %d via taskkill", proc)
+			_ = exec.Command("taskkill", "/F", "/PID", fmt.Sprintf("%d", proc)).Run()
+		}
+	}
+
+	// 3. 等待端口释放，避免新实例与旧实例冲突
+	deadline := time.Now().Add(10 * time.Second)
+	for s.isPortListening(s.port) && time.Now().Before(deadline) {
+		time.Sleep(200 * time.Millisecond)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	// 4. 清理 profile 残留锁文件
+	profileDir, err := s.resolveProfileDir()
+	if err != nil {
+		return fmt.Errorf("restart: resolve profile: %w", err)
+	}
+	s.clearProfileLocks(profileDir)
+
+	// 5. 重新启动 Chrome（参数与 Start 一致，保留 profile 登录态）
+	chromePath := s.cfg.ChromePath
+	if chromePath == "" {
+		chromePath = s.findChromeExecutable()
+	}
+	args := []string{
+		"--no-first-run",
+		"--no-default-browser-check",
+		"--disable-popup-blocking",
+		"--disable-extensions",
+		"--no-sandbox",
+		"--disable-dev-shm-usage",
+		"--disable-gpu",
+		"--disable-session-crashed-bubble",
+		"--disable-infobars",
+		"--disable-background-networking",
+		"--disable-sync",
+		"--disable-blink-features=AutomationControlled",
+		"--disable-features=TranslateUI",
+		fmt.Sprintf("--remote-debugging-port=%d", s.port),
+		fmt.Sprintf("--user-data-dir=%s", profileDir),
+		"--window-size=900,600",
+	}
+	s.chromeCmd = exec.Command(chromePath, args...)
+	s.chromeCmd.Stdout = io.Discard
+	s.chromeCmd.Stderr = io.Discard
+	if err := s.chromeCmd.Start(); err != nil {
+		return fmt.Errorf("restart: start Chrome: %w", err)
+	}
+	log.Printf("[session] Chrome restarted pid=%d, waiting for CDP...", s.chromeCmd.Process.Pid)
+
+	// 6. 等待 CDP 就绪
+	if err := s.waitForCDP(15 * time.Second); err != nil {
+		return fmt.Errorf("restart: wait for CDP: %w", err)
+	}
+
+	// 7. 重建连接上下文
+	wsURL, err := s.getBrowserWSURL()
+	if err != nil {
+		return fmt.Errorf("restart: get WS URL: %w", err)
+	}
+	s.allocCtx, s.allocCancel = chromedp.NewRemoteAllocator(context.Background(), wsURL)
+	s.browserCtx, s.browserCancel = s.newBrowserCtx(s.allocCtx, "")
+
+	// 8. 设置窗口并导航回 DeepSeek 首页（登录态保留在 profile，加载后仍处于登录状态）
+	s.setWindowSize(900, 600)
+	navCtx, navCancel := context.WithTimeout(s.browserCtx, 15*time.Second)
+	defer navCancel()
+	// [Fix 2026-08-09] 导航失败必须报错，不能吞掉继续——否则重启"假成功"，
+	// 会在页面未就绪的状态下继续被使用，导致重启后 1-2 秒又断连（2026-08-09 观察：循环 12 次）
+	if err := chromedp.Run(navCtx, chromedp.Navigate("https://chat.deepseek.com/")); err != nil {
+		return fmt.Errorf("restart: navigate DeepSeek: %w", err)
+	}
+
+	// [Fix 2026-08-09] 重启后健康检查：轮询等待聊天页面（textarea）出现。
+	// textarea 出现 = 页面加载完成 + 已登录 + 连接可用（DeepSeek 未登录时只显示登录页，不会有输入框），
+	// 一次验证三者。替代原固定 sleep 2s（页面加载慢时不够，导致"假成功"后立即被长文本输入击穿又断连）。
+	taDeadline := time.Now().Add(20 * time.Second)
+	var taOK bool
+	for time.Now().Before(taDeadline) {
+		if err := chromedp.Run(s.browserCtx,
+			chromedp.Evaluate(`!!document.querySelector('textarea')`, &taOK),
+		); err == nil && taOK {
+			log.Println("[session] restart: chat page ready (textarea found)")
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !taOK {
+		// 等不到聊天页面 = 登录状态失效。自动重新登录当前账号；
+		// checkAndLogin 使用传入 ctx，不调 s.Context()，不会与已持有的 ctxMu 锁死锁
+		log.Printf("[session] restart: chat page not ready in 20s, login state invalid, re-login %s", s.currentEmail)
+		if s.currentEmail == "" {
+			return fmt.Errorf("restart: chat page not ready and no current account to re-login")
+		}
+		reCtx, reCancel := context.WithTimeout(s.browserCtx, 40*time.Second)
+		defer reCancel()
+		acct := s.findAccount(s.currentEmail)
+		if acct == nil {
+			return fmt.Errorf("restart: account %s not found in config", s.currentEmail)
+		}
+		if err := s.checkAndLogin(reCtx, acct.Email, acct.Password); err != nil {
+			return fmt.Errorf("restart: re-login %s: %w", acct.Email, err)
+		}
+		s.loggedIn.Store(true)
+		log.Printf("[session] restart: re-login %s successful", acct.Email)
+	}
+
+	// 9. 检查并确保"深度思考"处于开启状态。
+	// 重启浏览器=全新打开 DeepSeek 页面，深度思考默认关闭，必须重新开启，否则重启后回复将不带思考过程。
+	// 直接用 s.browserCtx 调用 checkToggleStatesLocked——本函数已持有 s.ctxMu 锁，不能再调 s.Context()（会二次加锁死锁）。
+	toggleCtx, toggleCancel := context.WithTimeout(s.browserCtx, 15*time.Second)
+	defer toggleCancel()
+	s.checkToggleStatesLocked(toggleCtx)
+
+	log.Println("[session] browser restarted successfully")
+	return nil
+}
+
 func (s *Session) Context() context.Context {
 	s.ctxMu.Lock()
 	defer s.ctxMu.Unlock()
 	if s.browserCtx != nil && s.browserCtx.Err() == nil {
 		return s.browserCtx
 	}
-	s.resetCtxLocked()
-	return s.browserCtx
-}
-
-// advanceAccountIdx 前进账号索引，用于切换失败时跳过当前账号。
-func (s *Session) advanceAccountIdx() {
-	if len(s.cfg.Accounts) > 0 {
-		s.currentAccountIdx = (s.currentAccountIdx + 1) % len(s.cfg.Accounts)
+	// 连接已断开（chromedp 检测到浏览器连接丢失会自动取消 context）。
+	// 直接重启浏览器恢复：保留用户数据目录，登录态不丢；重启后页面自动回到 DeepSeek 首页。
+	// 不采用轻量重建（resetCtxLocked）——连接断开时页面状态不可信，干净重启最可靠。
+	if err := s.restartBrowserLocked(); err != nil {
+		log.Printf("[session] restart browser failed: %v", err)
+		// 兜底：返回一个已取消的占位 context，避免 nil 崩溃，让上层快速失败并可在下次请求时重试
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return ctx
 	}
+	return s.browserCtx
 }
 
 func (s *Session) findDeepSeekTarget() target.ID {
@@ -412,7 +681,7 @@ func (s *Session) Login(ctx context.Context, email, password string) error {
 		return fmt.Errorf("check/login: %w", err)
 	}
 
-	s.loggedIn = true
+	s.loggedIn.Store(true)
 	s.currentEmail = account.Email
 	// 找到当前账号的索引
 	for i, a := range s.cfg.Accounts {
@@ -488,6 +757,115 @@ func (s *Session) ensureOnDeepSeek(ctx context.Context) error {
 	)
 }
 
+// loginInterceptorJS 拦截 /api/v0/users/login 的响应，保存到 window.__dsLoginResult
+// 用于区分登录失败类型：密码错误/账号封禁/网络波动
+// 注意：__dsLoginResult = null 必须在 IIFE 外部，每次注入都重置旧结果
+// 避免连续登录失败时第二次读到第一次的旧结果
+const loginInterceptorJS = `
+window.__dsLoginResult = null;
+(function() {
+	if (window.__dsLoginInterceptorInstalled) return;
+	window.__dsLoginInterceptorInstalled = true;
+	const origFetch = window.fetch;
+	window.fetch = function(input, init) {
+		const url = typeof input === 'string' ? input : (input && input.url) || '';
+		const p = origFetch.apply(this, arguments);
+		if (url.indexOf('/api/v0/users/login') !== -1) {
+			p.then(function(resp) {
+				const httpStatus = resp.status;
+				resp.clone().json().then(function(data) {
+					window.__dsLoginResult = {
+						httpStatus: httpStatus,
+						code: data.code,
+						msg: data.msg || '',
+						bizCode: (data.data && data.data.biz_code !== undefined) ? data.data.biz_code : -1,
+						bizMsg: (data.data && data.data.biz_msg) ? data.data.biz_msg : '',
+						networkError: false
+					};
+				}).catch(function(e) {
+					window.__dsLoginResult = {
+						httpStatus: httpStatus,
+						networkError: true,
+						errorMsg: 'json_parse_failed: ' + e.message
+					};
+				});
+			}).catch(function(e) {
+				window.__dsLoginResult = {
+					networkError: true,
+					errorMsg: 'fetch_failed: ' + e.message
+				};
+			});
+		}
+		return p;
+	};
+})();
+`
+
+// injectLoginInterceptor 在登录页注入 fetch 拦截器，捕获登录 API 响应
+func (s *Session) injectLoginInterceptor(ctx context.Context) error {
+	return chromedp.Run(ctx,
+		chromedp.Evaluate(loginInterceptorJS, nil),
+	)
+}
+
+// LoginResult 登录结果结构
+type LoginResult struct {
+	Success      bool   `json:"success"`
+	FailType     string `json:"failType"` // password_error / banned / network_error / unknown
+	BizMsg       string `json:"bizMsg"`
+	HttpStatus   int    `json:"httpStatus"`
+	NetworkError bool   `json:"networkError"`
+}
+
+// getLoginResult 读取拦截器捕获的登录结果，并判断失败类型
+func (s *Session) getLoginResult(ctx context.Context) *LoginResult {
+	var raw struct {
+		HttpStatus   int    `json:"httpStatus"`
+		Code         int    `json:"code"`
+		Msg          string `json:"msg"`
+		BizCode      int    `json:"bizCode"`
+		BizMsg       string `json:"bizMsg"`
+		NetworkError bool   `json:"networkError"`
+		ErrorMsg     string `json:"errorMsg"`
+	}
+	_ = chromedp.Run(ctx,
+		chromedp.Evaluate(`window.__dsLoginResult || null`, &raw),
+	)
+
+	result := &LoginResult{
+		HttpStatus:   raw.HttpStatus,
+		BizMsg:       raw.BizMsg,
+		NetworkError: raw.NetworkError,
+	}
+
+	if raw.NetworkError {
+		// 无 API 响应 = 网络波动
+		result.FailType = "network_error"
+		return result
+	}
+
+	// biz_code=0 表示登录成功
+	if raw.BizCode == 0 {
+		result.Success = true
+		return result
+	}
+
+	// 根据 biz_msg 判断失败类型
+	switch {
+	case raw.BizMsg == "PASSWORD_OR_USER_NAME_IS_WRONG":
+		result.FailType = "password_error"
+	case strings.Contains(strings.ToUpper(raw.BizMsg), "BAN"),
+		strings.Contains(strings.ToUpper(raw.BizMsg), "DISABLE"),
+		strings.Contains(strings.ToUpper(raw.BizMsg), "FORBIDDEN"),
+		strings.Contains(raw.BizMsg, "封禁"),
+		strings.Contains(raw.BizMsg, "禁用"):
+		result.FailType = "banned"
+	default:
+		result.FailType = "unknown"
+	}
+	return result
+}
+
 func (s *Session) doLogin(ctx context.Context, email, password string) error {
 	// 等待页面加载完成（等待 input 元素出现）
 	var inputCount int
@@ -502,6 +880,12 @@ func (s *Session) doLogin(ctx context.Context, email, password string) error {
 		time.Sleep(1 * time.Second)
 	}
 	log.Printf("[session] login page loaded, input count=%d", inputCount)
+
+	// [账号质量管理] 注入 fetch 拦截器，捕获 /api/v0/users/login 响应
+	// 用于区分登录失败类型：密码错误/账号封禁/网络波动
+	if err := s.injectLoginInterceptor(ctx); err != nil {
+		log.Printf("[session] inject login interceptor warning: %v", err)
+	}
 
 	// 等待按钮出现（DeepSeek 登录页按钮由 React 渲染，可能需要额外时间）
 	// 先检查"密码登录"文字是否出现，同时检查密码输入框是否已可见
@@ -805,19 +1189,29 @@ func (s *Session) findAccount(email string) *config.Account {
 }
 
 // SwitchAccount 切换到下一个账号并重新登录
-// 返回切换后的账号邮箱，如果只有一个账号则返回空字符串表示无法切换
+// 返回切换后的账号邮箱，如果可用账号少于2个则返回错误
+// 注意：登录失败次数 > 0 的账号已在 reorderAccounts 时从 sortedIndices 中排除
 func (s *Session) SwitchAccount() (string, error) {
-	if len(s.cfg.Accounts) <= 1 {
-		log.Println("[session] only one account, cannot switch")
-		return "", fmt.Errorf("only one account configured")
+	if len(s.sortedIndices) <= 1 {
+		log.Printf("[session] cannot switch: only %d available account(s) (config has %d, but some may be disabled due to login failures)",
+			len(s.sortedIndices), len(s.cfg.Accounts))
+		return "", fmt.Errorf("no alternative account available (disabled: %d, available: %d)",
+			len(s.cfg.Accounts)-len(s.sortedIndices), len(s.sortedIndices))
 	}
 
-	// 计算下一个账号索引
-	nextIdx := (s.currentAccountIdx + 1) % len(s.cfg.Accounts)
+	// 根据质量排序列表计算下一个账号索引
+	s.currentSortedIdx = (s.currentSortedIdx + 1) % len(s.sortedIndices)
+	nextIdx := s.sortedIndices[s.currentSortedIdx]
 	nextAccount := s.cfg.Accounts[nextIdx]
 
-	log.Printf("[session] switching account from %s (idx=%d) to %s (idx=%d)",
-		s.currentEmail, s.currentAccountIdx, nextAccount.Email, nextIdx)
+	log.Printf("[session] switching account based on quality: from %s (sortedIdx=%d) to %s (sortedIdx=%d, configIdx=%d)",
+		s.currentEmail, (s.currentSortedIdx+len(s.sortedIndices)-1)%len(s.sortedIndices), nextAccount.Email, s.currentSortedIdx, nextIdx)
+
+	// 记录当前账号的会话统计
+	if s.currentEmail != "" {
+		s.stats.RecordSessionEnd(s.currentEmail, s.sessionRequestCount)
+		s.sessionRequestCount = 0
+	}
 
 	// 先登出当前账号（清除 cookies + 导航到登录页）
 	if err := s.logout(); err != nil {
@@ -842,6 +1236,11 @@ func (s *Session) SwitchAccount() (string, error) {
 
 	// 在登录页直接执行登录
 	if err := s.doLogin(s.Context(), nextAccount.Email, nextAccount.Password); err != nil {
+		// [账号质量管理] 根据登录失败类型决定是否禁用账号
+		loginResult := s.getLoginResult(s.Context())
+		log.Printf("[session] login to %s failed: %v, failType=%s, bizMsg=%s, httpStatus=%d, networkError=%v",
+			nextAccount.Email, err, loginResult.FailType, loginResult.BizMsg, loginResult.HttpStatus, loginResult.NetworkError)
+		s.handleLoginFailure(nextAccount.Email, loginResult)
 		return "", fmt.Errorf("login to %s failed: %w", nextAccount.Email, err)
 	}
 
@@ -857,13 +1256,21 @@ func (s *Session) SwitchAccount() (string, error) {
 			chromedp.Evaluate(`document.querySelector("textarea") !== null`, &hasTextarea),
 		)
 		if !hasTextarea {
+			// [账号质量管理] textarea 未出现可能是登录失败或页面加载慢，根据拦截器结果判断
+			loginResult := s.getLoginResult(s.Context())
+			log.Printf("[session] login to %s did not result in chat page, failType=%s, bizMsg=%s",
+				nextAccount.Email, loginResult.FailType, loginResult.BizMsg)
+			s.handleLoginFailure(nextAccount.Email, loginResult)
 			return "", fmt.Errorf("login to %s did not result in chat page", nextAccount.Email)
 		}
 	}
 
+	// [账号质量管理] 登录成功后清零登录失败计数（清除之前的网络波动记录）
+	s.stats.RecordLoginSuccess(nextAccount.Email)
+
 	s.currentAccountIdx = nextIdx
 	s.currentEmail = nextAccount.Email
-	s.loggedIn = true
+	s.loggedIn.Store(true)
 
 	log.Printf("[session] successfully switched to account %s", nextAccount.Email)
 
@@ -873,14 +1280,61 @@ func (s *Session) SwitchAccount() (string, error) {
 	return nextAccount.Email, nil
 }
 
-// checkToggleStates 检查并确保"深度思考"和"智能搜索"处于开启状态
+// handleLoginFailure 根据登录失败类型决定是否禁用账号
+// 密码错误/账号封禁 → 禁用账号并重新排序 sortedIndices
+// 网络波动/未知原因 → 不禁用，可重试
+// 禁用后需修正 currentSortedIdx，避免越界并指向当前账号在新列表中的位置
+func (s *Session) handleLoginFailure(email string, result *LoginResult) {
+	switch result.FailType {
+	case "password_error":
+		s.stats.RecordLoginFailure(email)
+		log.Printf("[session] ⚠️ 账号 %s 密码错误，已禁用", email)
+		s.reorderAccounts()
+		s.fixCurrentSortedIdx()
+	case "banned":
+		s.stats.RecordLoginFailure(email)
+		log.Printf("[session] ⚠️ 账号 %s 已被封禁，已禁用", email)
+		s.reorderAccounts()
+		s.fixCurrentSortedIdx()
+	case "network_error":
+		log.Printf("[session] 账号 %s 登录失败（网络波动），不禁用", email)
+	default:
+		log.Printf("[session] ⚠️ 账号 %s 登录失败（未知原因: %s），不禁用", email, result.BizMsg)
+	}
+}
+
+// fixCurrentSortedIdx 修正 currentSortedIdx，使其指向 currentEmail 在新 sortedIndices 中的位置
+// 在账号被禁用导致 sortedIndices 变化后调用，避免越界
+func (s *Session) fixCurrentSortedIdx() {
+	if len(s.sortedIndices) == 0 {
+		s.currentSortedIdx = 0
+		return
+	}
+	// 查找当前账号在新列表中的位置
+	for i, idx := range s.sortedIndices {
+		if s.cfg.Accounts[idx].Email == s.currentEmail {
+			s.currentSortedIdx = i
+			return
+		}
+	}
+	// 当前账号不在列表中（可能也被禁用），重置为0
+	s.currentSortedIdx = 0
+}
+
+// checkToggleStates 检查并确保"深度思考"和"智能搜索"处于开启状态（使用 s.Context()，供非持锁场景调用）。
+func (s *Session) checkToggleStates() {
+	s.checkToggleStatesLocked(s.Context())
+}
+
+// checkToggleStatesLocked 检查并确保"深度思考"和"智能搜索"处于开启状态（接受外部 ctx）。
 // 登录后 DeepSeek 默认关闭深度思考，需要自动点击开启
 // DOM 特征：div.ds-toggle-button，aria-pressed="true" 表示开启，class 含 --selected 表示开启
 // 注意：DeepSeek 的 React 按钮对 JS .click() 无效，必须用 chromedp.MouseClickXY 真实点击
-func (s *Session) checkToggleStates() {
+// 注意：本函数直接使用传入的 ctx，不再调用 s.Context()——供已持有 s.ctxMu 锁的场景（如 restartBrowserLocked）使用，避免重复加锁死锁。
+func (s *Session) checkToggleStatesLocked(ctx context.Context) {
 	// 第一步：用 JS 检测状态和获取按钮坐标
 	var detectResult string
-	chromedp.Run(s.Context(), chromedp.Evaluate(`(()=>{
+	if err := chromedp.Run(ctx, chromedp.Evaluate(`(()=>{
 		var info = {thinkingFound: false, thinkingOn: false, searchFound: false, searchOn: false, thinkingPos: null};
 
 		var toggles = document.querySelectorAll('div.ds-toggle-button, [aria-pressed]');
@@ -913,7 +1367,10 @@ func (s *Session) checkToggleStates() {
 			}
 		}
 		return JSON.stringify(info);
-	})()`, &detectResult))
+	})()`, &detectResult)); err != nil {
+		log.Printf("[session] checkToggleStates detect error: %v", err)
+		return
+	}
 	log.Printf("[session] toggle states: %s", detectResult)
 
 	// 第二步：如果深度思考未开启，用真实鼠标点击
@@ -927,20 +1384,26 @@ func (s *Session) checkToggleStates() {
 		json.Unmarshal([]byte(detectResult), &pos)
 		if pos.ThinkingPos != nil {
 			log.Printf("[session] clicking 深度思考 toggle at (%d,%d)", pos.ThinkingPos.X, pos.ThinkingPos.Y)
-			chromedp.Run(s.Context(), chromedp.MouseClickXY(float64(pos.ThinkingPos.X), float64(pos.ThinkingPos.Y)))
+			if err := chromedp.Run(ctx, chromedp.MouseClickXY(float64(pos.ThinkingPos.X), float64(pos.ThinkingPos.Y))); err != nil {
+				log.Printf("[session] checkToggleStates click error: %v", err)
+				return
+			}
 			time.Sleep(500 * time.Millisecond)
 
-			// 验证点击后是否已开启
+			// 验证点击后是否已开启（复用与第一步相同的检测逻辑）
 			var verify string
-			chromedp.Run(s.Context(), chromedp.Evaluate(`(()=>{
-				var els = document.querySelectorAll('div.ds-toggle-button[aria-pressed], div.ds-toggle-button');
-				for (var i = 0; i < els.length; i++) {
-					if ((els[i].textContent||'').trim().includes('深度思考')) {
-						return JSON.stringify({on: els[i].getAttribute('aria-pressed') === 'true' || els[i].className.includes('--selected')});
+			if err := chromedp.Run(ctx, chromedp.Evaluate(`(()=>{
+			var toggles = document.querySelectorAll('div.ds-toggle-button, [aria-pressed]');
+				for (var i = 0; i < toggles.length; i++) {
+					if ((toggles[i].textContent||'').trim().includes('深度思考')) {
+						return JSON.stringify({on: toggles[i].getAttribute('aria-pressed') === 'true' || toggles[i].className.includes('--selected')});
 					}
 				}
 				return JSON.stringify({on: false, error: 'not_found'});
-			})()`, &verify))
+			})()`, &verify)); err != nil {
+				log.Printf("[session] checkToggleStates verify error: %v", err)
+				return
+			}
 			log.Printf("[session] 深度思考 after click: %s", verify)
 		}
 	}
@@ -1007,7 +1470,7 @@ func (s *Session) logout() error {
 	log.Println("[session] navigated to sign_in page")
 
 	time.Sleep(5 * time.Second)
-	s.loggedIn = false
+	s.loggedIn.Store(false)
 	return nil
 }
 
@@ -1193,6 +1656,11 @@ func (s *Session) CurrentIndex() int {
 // AccountCount 返回配置的账号数量
 func (s *Session) AccountCount() int {
 	return len(s.cfg.Accounts)
+}
+
+// AvailableAccountCount 返回可用账号数量（排除登录失败被禁用的账号）
+func (s *Session) AvailableAccountCount() int {
+	return len(s.sortedIndices)
 }
 
 func (s *Session) NavigateHome(ctx context.Context) error {
