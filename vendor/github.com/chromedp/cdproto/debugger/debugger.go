@@ -91,7 +91,7 @@ func (p EnableParams) WithMaxScriptsCacheSize(maxScriptsCacheSize float64) *Enab
 
 // EnableReturns return values.
 type EnableReturns struct {
-	DebuggerID runtime.UniqueDebuggerID `json:"debuggerId,omitempty,omitzero"` // Unique identifier of the debugger.
+	DebuggerID cdp.UniqueDebuggerID `json:"debuggerId,omitempty,omitzero"` // Unique identifier of the debugger.
 }
 
 // Do executes Debugger.enable against the provided context.
@@ -99,7 +99,7 @@ type EnableReturns struct {
 // returns:
 //
 //	debuggerID - Unique identifier of the debugger.
-func (p *EnableParams) Do(ctx context.Context) (debuggerID runtime.UniqueDebuggerID, err error) {
+func (p *EnableParams) Do(ctx context.Context) (debuggerID cdp.UniqueDebuggerID, err error) {
 	// execute
 	var res EnableReturns
 	err = cdp.Execute(ctx, CommandEnable, p, &res)
@@ -112,15 +112,15 @@ func (p *EnableParams) Do(ctx context.Context) (debuggerID runtime.UniqueDebugge
 
 // EvaluateOnCallFrameParams evaluates expression on a given call frame.
 type EvaluateOnCallFrameParams struct {
-	CallFrameID           CallFrameID       `json:"callFrameId"`                              // Call frame identifier to evaluate on.
-	Expression            string            `json:"expression"`                               // Expression to evaluate.
-	ObjectGroup           string            `json:"objectGroup,omitempty,omitzero"`           // String object group name to put result into (allows rapid releasing resulting object handles using releaseObjectGroup).
-	IncludeCommandLineAPI bool              `json:"includeCommandLineAPI,omitempty,omitzero"` // Specifies whether command line API should be available to the evaluated expression, defaults to false.
-	Silent                bool              `json:"silent,omitempty,omitzero"`                // In silent mode exceptions thrown during evaluation are not reported and do not pause execution. Overrides setPauseOnException state.
-	ReturnByValue         bool              `json:"returnByValue,omitempty,omitzero"`         // Whether the result is expected to be a JSON object that should be sent by value.
-	GeneratePreview       bool              `json:"generatePreview,omitempty,omitzero"`       // Whether preview should be generated for the result.
-	ThrowOnSideEffect     bool              `json:"throwOnSideEffect,omitempty,omitzero"`     // Whether to throw an exception if side effect cannot be ruled out during evaluation.
-	Timeout               runtime.TimeDelta `json:"timeout,omitempty,omitzero"`               // Terminate execution after timing out (number of milliseconds).
+	CallFrameID           CallFrameID       `json:"callFrameId"`                    // Call frame identifier to evaluate on.
+	Expression            string            `json:"expression"`                     // Expression to evaluate.
+	ObjectGroup           string            `json:"objectGroup,omitempty,omitzero"` // String object group name to put result into (allows rapid releasing resulting object handles using releaseObjectGroup).
+	IncludeCommandLineAPI bool              `json:"includeCommandLineAPI"`          // Specifies whether command line API should be available to the evaluated expression, defaults to false.
+	Silent                bool              `json:"silent"`                         // In silent mode exceptions thrown during evaluation are not reported and do not pause execution. Overrides setPauseOnException state.
+	ReturnByValue         bool              `json:"returnByValue"`                  // Whether the result is expected to be a JSON object that should be sent by value.
+	GeneratePreview       bool              `json:"generatePreview"`                // Whether preview should be generated for the result.
+	ThrowOnSideEffect     bool              `json:"throwOnSideEffect"`              // Whether to throw an exception if side effect cannot be ruled out during evaluation.
+	Timeout               runtime.TimeDelta `json:"timeout,omitempty,omitzero"`     // Terminate execution after timing out (number of milliseconds).
 }
 
 // EvaluateOnCallFrame evaluates expression on a given call frame.
@@ -133,8 +133,13 @@ type EvaluateOnCallFrameParams struct {
 //	expression - Expression to evaluate.
 func EvaluateOnCallFrame(callFrameID CallFrameID, expression string) *EvaluateOnCallFrameParams {
 	return &EvaluateOnCallFrameParams{
-		CallFrameID: callFrameID,
-		Expression:  expression,
+		CallFrameID:           callFrameID,
+		Expression:            expression,
+		IncludeCommandLineAPI: false,
+		Silent:                false,
+		ReturnByValue:         false,
+		GeneratePreview:       false,
+		ThrowOnSideEffect:     false,
 	}
 }
 
@@ -211,9 +216,9 @@ func (p *EvaluateOnCallFrameParams) Do(ctx context.Context) (result *runtime.Rem
 // GetPossibleBreakpointsParams returns possible locations for breakpoint.
 // scriptId in start and end range locations should be the same.
 type GetPossibleBreakpointsParams struct {
-	Start              *Location `json:"start"`                                 // Start of range to search possible breakpoint locations in.
-	End                *Location `json:"end,omitempty,omitzero"`                // End of range to search possible breakpoint locations in (excluding). When not specified, end of scripts is used as end of range.
-	RestrictToFunction bool      `json:"restrictToFunction,omitempty,omitzero"` // Only consider locations which are in the same (non-nested) function as start.
+	Start              *Location `json:"start"`                  // Start of range to search possible breakpoint locations in.
+	End                *Location `json:"end,omitempty,omitzero"` // End of range to search possible breakpoint locations in (excluding). When not specified, end of scripts is used as end of range.
+	RestrictToFunction bool      `json:"restrictToFunction"`     // Only consider locations which are in the same (non-nested) function as start.
 }
 
 // GetPossibleBreakpoints returns possible locations for breakpoint. scriptId
@@ -226,7 +231,8 @@ type GetPossibleBreakpointsParams struct {
 //	start - Start of range to search possible breakpoint locations in.
 func GetPossibleBreakpoints(start *Location) *GetPossibleBreakpointsParams {
 	return &GetPossibleBreakpointsParams{
-		Start: start,
+		Start:              start,
+		RestrictToFunction: false,
 	}
 }
 
@@ -267,7 +273,7 @@ func (p *GetPossibleBreakpointsParams) Do(ctx context.Context) (locations []*Bre
 
 // GetScriptSourceParams returns source for the script with given id.
 type GetScriptSourceParams struct {
-	ScriptID runtime.ScriptID `json:"scriptId"` // Id of the script to get source for.
+	ScriptID cdp.ScriptID `json:"scriptId"` // Id of the script to get source for.
 }
 
 // GetScriptSource returns source for the script with given id.
@@ -277,7 +283,7 @@ type GetScriptSourceParams struct {
 // parameters:
 //
 //	scriptID - Id of the script to get source for.
-func GetScriptSource(scriptID runtime.ScriptID) *GetScriptSourceParams {
+func GetScriptSource(scriptID cdp.ScriptID) *GetScriptSourceParams {
 	return &GetScriptSourceParams{
 		ScriptID: scriptID,
 	}
@@ -314,7 +320,7 @@ func (p *GetScriptSourceParams) Do(ctx context.Context) (scriptSource string, by
 
 // DisassembleWasmModuleParams [no description].
 type DisassembleWasmModuleParams struct {
-	ScriptID runtime.ScriptID `json:"scriptId"` // Id of the script to disassemble
+	ScriptID cdp.ScriptID `json:"scriptId"` // Id of the script to disassemble
 }
 
 // DisassembleWasmModule [no description].
@@ -324,7 +330,7 @@ type DisassembleWasmModuleParams struct {
 // parameters:
 //
 //	scriptID - Id of the script to disassemble
-func DisassembleWasmModule(scriptID runtime.ScriptID) *DisassembleWasmModuleParams {
+func DisassembleWasmModule(scriptID cdp.ScriptID) *DisassembleWasmModuleParams {
 	return &DisassembleWasmModuleParams{
 		ScriptID: scriptID,
 	}
@@ -530,7 +536,7 @@ func (p *RestartFrameParams) Do(ctx context.Context) (err error) {
 
 // ResumeParams resumes JavaScript execution.
 type ResumeParams struct {
-	TerminateOnResume bool `json:"terminateOnResume,omitempty,omitzero"` // Set to true to terminate execution upon resuming execution. In contrast to Runtime.terminateExecution, this will allows to execute further JavaScript (i.e. via evaluation) until execution of the paused code is actually resumed, at which point termination is triggered. If execution is currently not paused, this parameter has no effect.
+	TerminateOnResume bool `json:"terminateOnResume"` // Set to true to terminate execution upon resuming execution. In contrast to Runtime.terminateExecution, this will allows to execute further JavaScript (i.e. via evaluation) until execution of the paused code is actually resumed, at which point termination is triggered. If execution is currently not paused, this parameter has no effect.
 }
 
 // Resume resumes JavaScript execution.
@@ -539,7 +545,9 @@ type ResumeParams struct {
 //
 // parameters:
 func Resume() *ResumeParams {
-	return &ResumeParams{}
+	return &ResumeParams{
+		TerminateOnResume: false,
+	}
 }
 
 // WithTerminateOnResume set to true to terminate execution upon resuming
@@ -559,10 +567,10 @@ func (p *ResumeParams) Do(ctx context.Context) (err error) {
 
 // SearchInContentParams searches for given string in script content.
 type SearchInContentParams struct {
-	ScriptID      runtime.ScriptID `json:"scriptId"`                         // Id of the script to search in.
-	Query         string           `json:"query"`                            // String to search for.
-	CaseSensitive bool             `json:"caseSensitive,omitempty,omitzero"` // If true, search is case sensitive.
-	IsRegex       bool             `json:"isRegex,omitempty,omitzero"`       // If true, treats string parameter as regex.
+	ScriptID      cdp.ScriptID `json:"scriptId"`      // Id of the script to search in.
+	Query         string       `json:"query"`         // String to search for.
+	CaseSensitive bool         `json:"caseSensitive"` // If true, search is case sensitive.
+	IsRegex       bool         `json:"isRegex"`       // If true, treats string parameter as regex.
 }
 
 // SearchInContent searches for given string in script content.
@@ -573,10 +581,12 @@ type SearchInContentParams struct {
 //
 //	scriptID - Id of the script to search in.
 //	query - String to search for.
-func SearchInContent(scriptID runtime.ScriptID, query string) *SearchInContentParams {
+func SearchInContent(scriptID cdp.ScriptID, query string) *SearchInContentParams {
 	return &SearchInContentParams{
-		ScriptID: scriptID,
-		Query:    query,
+		ScriptID:      scriptID,
+		Query:         query,
+		CaseSensitive: false,
+		IsRegex:       false,
 	}
 }
 
@@ -672,8 +682,8 @@ func (p *SetBlackboxExecutionContextsParams) Do(ctx context.Context) (err error)
 // one of the patterns. VM will try to leave blackboxed script by performing
 // 'step in' several times, finally resorting to 'step out' if unsuccessful.
 type SetBlackboxPatternsParams struct {
-	Patterns      []string `json:"patterns"`                         // Array of regexps that will be used to check script url for blackbox state.
-	SkipAnonymous bool     `json:"skipAnonymous,omitempty,omitzero"` // If true, also ignore scripts with no source url.
+	Patterns      []string `json:"patterns"`      // Array of regexps that will be used to check script url for blackbox state.
+	SkipAnonymous bool     `json:"skipAnonymous"` // If true, also ignore scripts with no source url.
 }
 
 // SetBlackboxPatterns replace previous blackbox patterns with passed ones.
@@ -688,7 +698,8 @@ type SetBlackboxPatternsParams struct {
 //	patterns - Array of regexps that will be used to check script url for blackbox state.
 func SetBlackboxPatterns(patterns []string) *SetBlackboxPatternsParams {
 	return &SetBlackboxPatternsParams{
-		Patterns: patterns,
+		Patterns:      patterns,
+		SkipAnonymous: false,
 	}
 }
 
@@ -709,7 +720,7 @@ func (p *SetBlackboxPatternsParams) Do(ctx context.Context) (err error) {
 // array contains positions where blackbox state is changed. First interval
 // isn't blackboxed. Array should be sorted.
 type SetBlackboxedRangesParams struct {
-	ScriptID  runtime.ScriptID  `json:"scriptId"` // Id of the script.
+	ScriptID  cdp.ScriptID      `json:"scriptId"` // Id of the script.
 	Positions []*ScriptPosition `json:"positions"`
 }
 
@@ -725,7 +736,7 @@ type SetBlackboxedRangesParams struct {
 //
 //	scriptID - Id of the script.
 //	positions
-func SetBlackboxedRanges(scriptID runtime.ScriptID, positions []*ScriptPosition) *SetBlackboxedRangesParams {
+func SetBlackboxedRanges(scriptID cdp.ScriptID, positions []*ScriptPosition) *SetBlackboxedRangesParams {
 	return &SetBlackboxedRangesParams{
 		ScriptID:  scriptID,
 		Positions: positions,
@@ -1048,10 +1059,10 @@ func (p *SetReturnValueParams) Do(ctx context.Context) (err error) {
 // successful and a Debugger.restartFrame for the top-most function is
 // automatically triggered.
 type SetScriptSourceParams struct {
-	ScriptID             runtime.ScriptID `json:"scriptId"`                                // Id of the script to edit.
-	ScriptSource         string           `json:"scriptSource"`                            // New content of the script.
-	DryRun               bool             `json:"dryRun,omitempty,omitzero"`               // If true the change will not actually be applied. Dry run may be used to get result description without actually modifying the code.
-	AllowTopFrameEditing bool             `json:"allowTopFrameEditing,omitempty,omitzero"` // If true, then scriptSource is allowed to change the function on top of the stack as long as the top-most stack frame is the only activation of that function.
+	ScriptID             cdp.ScriptID `json:"scriptId"`             // Id of the script to edit.
+	ScriptSource         string       `json:"scriptSource"`         // New content of the script.
+	DryRun               bool         `json:"dryRun"`               // If true the change will not actually be applied. Dry run may be used to get result description without actually modifying the code.
+	AllowTopFrameEditing bool         `json:"allowTopFrameEditing"` // If true, then scriptSource is allowed to change the function on top of the stack as long as the top-most stack frame is the only activation of that function.
 }
 
 // SetScriptSource edits JavaScript source live. In general, functions that
@@ -1067,10 +1078,12 @@ type SetScriptSourceParams struct {
 //
 //	scriptID - Id of the script to edit.
 //	scriptSource - New content of the script.
-func SetScriptSource(scriptID runtime.ScriptID, scriptSource string) *SetScriptSourceParams {
+func SetScriptSource(scriptID cdp.ScriptID, scriptSource string) *SetScriptSourceParams {
 	return &SetScriptSourceParams{
-		ScriptID:     scriptID,
-		ScriptSource: scriptSource,
+		ScriptID:             scriptID,
+		ScriptSource:         scriptSource,
+		DryRun:               false,
+		AllowTopFrameEditing: false,
 	}
 }
 
@@ -1173,8 +1186,8 @@ func (p *SetVariableValueParams) Do(ctx context.Context) (err error) {
 
 // StepIntoParams steps into the function call.
 type StepIntoParams struct {
-	BreakOnAsyncCall bool             `json:"breakOnAsyncCall,omitempty,omitzero"` // Debugger will pause on the execution of the first async task which was scheduled before next pause.
-	SkipList         []*LocationRange `json:"skipList,omitempty,omitzero"`         // The skipList specifies location ranges that should be skipped on step into.
+	BreakOnAsyncCall bool             `json:"breakOnAsyncCall"`            // Debugger will pause on the execution of the first async task which was scheduled before next pause.
+	SkipList         []*LocationRange `json:"skipList,omitempty,omitzero"` // The skipList specifies location ranges that should be skipped on step into.
 }
 
 // StepInto steps into the function call.
@@ -1183,7 +1196,9 @@ type StepIntoParams struct {
 //
 // parameters:
 func StepInto() *StepIntoParams {
-	return &StepIntoParams{}
+	return &StepIntoParams{
+		BreakOnAsyncCall: false,
+	}
 }
 
 // WithBreakOnAsyncCall debugger will pause on the execution of the first

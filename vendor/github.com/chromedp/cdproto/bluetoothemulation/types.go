@@ -42,6 +42,146 @@ func (t *CentralState) UnmarshalJSON(buf []byte) error {
 	return nil
 }
 
+// GATTOperationType indicates the various types of GATT event.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/BluetoothEmulation#type-GATTOperationType
+type GATTOperationType string
+
+// String returns the GATTOperationType as string value.
+func (t GATTOperationType) String() string {
+	return string(t)
+}
+
+// GATTOperationType values.
+const (
+	GATTOperationTypeConnection GATTOperationType = "connection"
+	GATTOperationTypeDiscovery  GATTOperationType = "discovery"
+)
+
+// UnmarshalJSON satisfies [json.Unmarshaler].
+func (t *GATTOperationType) UnmarshalJSON(buf []byte) error {
+	s := string(buf)
+	s = strings.TrimSuffix(strings.TrimPrefix(s, `"`), `"`)
+
+	switch GATTOperationType(s) {
+	case GATTOperationTypeConnection:
+		*t = GATTOperationTypeConnection
+	case GATTOperationTypeDiscovery:
+		*t = GATTOperationTypeDiscovery
+	default:
+		return fmt.Errorf("unknown GATTOperationType value: %v", s)
+	}
+	return nil
+}
+
+// CharacteristicWriteType indicates the various types of characteristic
+// write.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/BluetoothEmulation#type-CharacteristicWriteType
+type CharacteristicWriteType string
+
+// String returns the CharacteristicWriteType as string value.
+func (t CharacteristicWriteType) String() string {
+	return string(t)
+}
+
+// CharacteristicWriteType values.
+const (
+	CharacteristicWriteTypeWriteDefaultDeprecated CharacteristicWriteType = "write-default-deprecated"
+	CharacteristicWriteTypeWriteWithResponse      CharacteristicWriteType = "write-with-response"
+	CharacteristicWriteTypeWriteWithoutResponse   CharacteristicWriteType = "write-without-response"
+)
+
+// UnmarshalJSON satisfies [json.Unmarshaler].
+func (t *CharacteristicWriteType) UnmarshalJSON(buf []byte) error {
+	s := string(buf)
+	s = strings.TrimSuffix(strings.TrimPrefix(s, `"`), `"`)
+
+	switch CharacteristicWriteType(s) {
+	case CharacteristicWriteTypeWriteDefaultDeprecated:
+		*t = CharacteristicWriteTypeWriteDefaultDeprecated
+	case CharacteristicWriteTypeWriteWithResponse:
+		*t = CharacteristicWriteTypeWriteWithResponse
+	case CharacteristicWriteTypeWriteWithoutResponse:
+		*t = CharacteristicWriteTypeWriteWithoutResponse
+	default:
+		return fmt.Errorf("unknown CharacteristicWriteType value: %v", s)
+	}
+	return nil
+}
+
+// CharacteristicOperationType indicates the various types of characteristic
+// operation.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/BluetoothEmulation#type-CharacteristicOperationType
+type CharacteristicOperationType string
+
+// String returns the CharacteristicOperationType as string value.
+func (t CharacteristicOperationType) String() string {
+	return string(t)
+}
+
+// CharacteristicOperationType values.
+const (
+	CharacteristicOperationTypeRead                         CharacteristicOperationType = "read"
+	CharacteristicOperationTypeWrite                        CharacteristicOperationType = "write"
+	CharacteristicOperationTypeSubscribeToNotifications     CharacteristicOperationType = "subscribe-to-notifications"
+	CharacteristicOperationTypeUnsubscribeFromNotifications CharacteristicOperationType = "unsubscribe-from-notifications"
+)
+
+// UnmarshalJSON satisfies [json.Unmarshaler].
+func (t *CharacteristicOperationType) UnmarshalJSON(buf []byte) error {
+	s := string(buf)
+	s = strings.TrimSuffix(strings.TrimPrefix(s, `"`), `"`)
+
+	switch CharacteristicOperationType(s) {
+	case CharacteristicOperationTypeRead:
+		*t = CharacteristicOperationTypeRead
+	case CharacteristicOperationTypeWrite:
+		*t = CharacteristicOperationTypeWrite
+	case CharacteristicOperationTypeSubscribeToNotifications:
+		*t = CharacteristicOperationTypeSubscribeToNotifications
+	case CharacteristicOperationTypeUnsubscribeFromNotifications:
+		*t = CharacteristicOperationTypeUnsubscribeFromNotifications
+	default:
+		return fmt.Errorf("unknown CharacteristicOperationType value: %v", s)
+	}
+	return nil
+}
+
+// DescriptorOperationType indicates the various types of descriptor
+// operation.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/BluetoothEmulation#type-DescriptorOperationType
+type DescriptorOperationType string
+
+// String returns the DescriptorOperationType as string value.
+func (t DescriptorOperationType) String() string {
+	return string(t)
+}
+
+// DescriptorOperationType values.
+const (
+	DescriptorOperationTypeRead  DescriptorOperationType = "read"
+	DescriptorOperationTypeWrite DescriptorOperationType = "write"
+)
+
+// UnmarshalJSON satisfies [json.Unmarshaler].
+func (t *DescriptorOperationType) UnmarshalJSON(buf []byte) error {
+	s := string(buf)
+	s = strings.TrimSuffix(strings.TrimPrefix(s, `"`), `"`)
+
+	switch DescriptorOperationType(s) {
+	case DescriptorOperationTypeRead:
+		*t = DescriptorOperationTypeRead
+	case DescriptorOperationTypeWrite:
+		*t = DescriptorOperationTypeWrite
+	default:
+		return fmt.Errorf("unknown DescriptorOperationType value: %v", s)
+	}
+	return nil
+}
+
 // ManufacturerData stores the manufacturer data.
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/BluetoothEmulation#type-ManufacturerData
@@ -70,4 +210,20 @@ type ScanEntry struct {
 	DeviceAddress string      `json:"deviceAddress"`
 	Rssi          int64       `json:"rssi"`
 	ScanRecord    *ScanRecord `json:"scanRecord"`
+}
+
+// CharacteristicProperties describes the properties of a characteristic.
+// This follows Bluetooth Core Specification BT 4.2 Vol 3 Part G 3.3.1.
+// Characteristic Properties.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/BluetoothEmulation#type-CharacteristicProperties
+type CharacteristicProperties struct {
+	Broadcast                 bool `json:"broadcast"`
+	Read                      bool `json:"read"`
+	WriteWithoutResponse      bool `json:"writeWithoutResponse"`
+	Write                     bool `json:"write"`
+	Notify                    bool `json:"notify"`
+	Indicate                  bool `json:"indicate"`
+	AuthenticatedSignedWrites bool `json:"authenticatedSignedWrites"`
+	ExtendedProperties        bool `json:"extendedProperties"`
 }

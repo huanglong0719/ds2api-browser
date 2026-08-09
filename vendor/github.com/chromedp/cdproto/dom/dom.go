@@ -123,7 +123,7 @@ type DescribeNodeParams struct {
 	BackendNodeID cdp.BackendNodeID      `json:"backendNodeId,omitempty,omitzero"` // Identifier of the backend node.
 	ObjectID      runtime.RemoteObjectID `json:"objectId,omitempty,omitzero"`      // JavaScript object id of the node wrapper.
 	Depth         int64                  `json:"depth,omitempty,omitzero"`         // The maximum depth at which children should be retrieved, defaults to 1. Use -1 for the entire subtree or provide an integer larger than 0.
-	Pierce        bool                   `json:"pierce,omitempty,omitzero"`        // Whether or not iframes and shadow roots should be traversed when returning the subtree (default is false).
+	Pierce        bool                   `json:"pierce"`                           // Whether or not iframes and shadow roots should be traversed when returning the subtree (default is false).
 }
 
 // DescribeNode describes node given its id, does not require domain to be
@@ -133,7 +133,9 @@ type DescribeNodeParams struct {
 //
 // parameters:
 func DescribeNode() *DescribeNodeParams {
-	return &DescribeNodeParams{}
+	return &DescribeNodeParams{
+		Pierce: false,
+	}
 }
 
 // WithNodeID identifier of the node.
@@ -502,8 +504,8 @@ func (p *GetContentQuadsParams) Do(ctx context.Context) (quads []Quad, err error
 // to the caller. Implicitly enables the DOM domain events for the current
 // target.
 type GetDocumentParams struct {
-	Depth  int64 `json:"depth,omitempty,omitzero"`  // The maximum depth at which children should be retrieved, defaults to 1. Use -1 for the entire subtree or provide an integer larger than 0.
-	Pierce bool  `json:"pierce,omitempty,omitzero"` // Whether or not iframes and shadow roots should be traversed when returning the subtree (default is false).
+	Depth  int64 `json:"depth,omitempty,omitzero"` // The maximum depth at which children should be retrieved, defaults to 1. Use -1 for the entire subtree or provide an integer larger than 0.
+	Pierce bool  `json:"pierce"`                   // Whether or not iframes and shadow roots should be traversed when returning the subtree (default is false).
 }
 
 // GetDocument returns the root DOM node (and optionally the subtree) to the
@@ -513,7 +515,9 @@ type GetDocumentParams struct {
 //
 // parameters:
 func GetDocument() *GetDocumentParams {
-	return &GetDocumentParams{}
+	return &GetDocumentParams{
+		Pierce: false,
+	}
 }
 
 // WithDepth the maximum depth at which children should be retrieved,
@@ -555,9 +559,9 @@ func (p *GetDocumentParams) Do(ctx context.Context) (root *cdp.Node, err error) 
 // GetNodesForSubtreeByStyleParams finds nodes with a given computed style in
 // a subtree.
 type GetNodesForSubtreeByStyleParams struct {
-	NodeID         cdp.NodeID                  `json:"nodeId"`                    // Node ID pointing to the root of a subtree.
-	ComputedStyles []*CSSComputedStyleProperty `json:"computedStyles"`            // The style to filter nodes by (includes nodes if any of properties matches).
-	Pierce         bool                        `json:"pierce,omitempty,omitzero"` // Whether or not iframes and shadow roots in the same target should be traversed when returning the results (default is false).
+	NodeID         cdp.NodeID                  `json:"nodeId"`         // Node ID pointing to the root of a subtree.
+	ComputedStyles []*CSSComputedStyleProperty `json:"computedStyles"` // The style to filter nodes by (includes nodes if any of properties matches).
+	Pierce         bool                        `json:"pierce"`         // Whether or not iframes and shadow roots in the same target should be traversed when returning the results (default is false).
 }
 
 // GetNodesForSubtreeByStyle finds nodes with a given computed style in a
@@ -573,6 +577,7 @@ func GetNodesForSubtreeByStyle(nodeID cdp.NodeID, computedStyles []*CSSComputedS
 	return &GetNodesForSubtreeByStyleParams{
 		NodeID:         nodeID,
 		ComputedStyles: computedStyles,
+		Pierce:         false,
 	}
 }
 
@@ -607,10 +612,10 @@ func (p *GetNodesForSubtreeByStyleParams) Do(ctx context.Context) (nodeIDs []cdp
 // GetNodeForLocationParams returns node id at given location. Depending on
 // whether DOM domain is enabled, nodeId is either returned or not.
 type GetNodeForLocationParams struct {
-	X                         int64 `json:"x"`                                            // X coordinate.
-	Y                         int64 `json:"y"`                                            // Y coordinate.
-	IncludeUserAgentShadowDOM bool  `json:"includeUserAgentShadowDOM,omitempty,omitzero"` // False to skip to the nearest non-UA shadow root ancestor (default: false).
-	IgnorePointerEventsNone   bool  `json:"ignorePointerEventsNone,omitempty,omitzero"`   // Whether to ignore pointer-events: none on elements and hit test them.
+	X                         int64 `json:"x"`                         // X coordinate.
+	Y                         int64 `json:"y"`                         // Y coordinate.
+	IncludeUserAgentShadowDOM bool  `json:"includeUserAgentShadowDOM"` // False to skip to the nearest non-UA shadow root ancestor (default: false).
+	IgnorePointerEventsNone   bool  `json:"ignorePointerEventsNone"`   // Whether to ignore pointer-events: none on elements and hit test them.
 }
 
 // GetNodeForLocation returns node id at given location. Depending on whether
@@ -624,8 +629,10 @@ type GetNodeForLocationParams struct {
 //	y - Y coordinate.
 func GetNodeForLocation(x int64, y int64) *GetNodeForLocationParams {
 	return &GetNodeForLocationParams{
-		X: x,
-		Y: y,
+		X:                         x,
+		Y:                         y,
+		IncludeUserAgentShadowDOM: false,
+		IgnorePointerEventsNone:   false,
 	}
 }
 
@@ -670,9 +677,10 @@ func (p *GetNodeForLocationParams) Do(ctx context.Context) (backendNodeID cdp.Ba
 
 // GetOuterHTMLParams returns node's HTML markup.
 type GetOuterHTMLParams struct {
-	NodeID        cdp.NodeID             `json:"nodeId,omitempty,omitzero"`        // Identifier of the node.
-	BackendNodeID cdp.BackendNodeID      `json:"backendNodeId,omitempty,omitzero"` // Identifier of the backend node.
-	ObjectID      runtime.RemoteObjectID `json:"objectId,omitempty,omitzero"`      // JavaScript object id of the node wrapper.
+	NodeID           cdp.NodeID             `json:"nodeId,omitempty,omitzero"`        // Identifier of the node.
+	BackendNodeID    cdp.BackendNodeID      `json:"backendNodeId,omitempty,omitzero"` // Identifier of the backend node.
+	ObjectID         runtime.RemoteObjectID `json:"objectId,omitempty,omitzero"`      // JavaScript object id of the node wrapper.
+	IncludeShadowDOM bool                   `json:"includeShadowDOM"`                 // Include all shadow roots. Equals to false if not specified.
 }
 
 // GetOuterHTML returns node's HTML markup.
@@ -681,7 +689,9 @@ type GetOuterHTMLParams struct {
 //
 // parameters:
 func GetOuterHTML() *GetOuterHTMLParams {
-	return &GetOuterHTMLParams{}
+	return &GetOuterHTMLParams{
+		IncludeShadowDOM: false,
+	}
 }
 
 // WithNodeID identifier of the node.
@@ -699,6 +709,13 @@ func (p GetOuterHTMLParams) WithBackendNodeID(backendNodeID cdp.BackendNodeID) *
 // WithObjectID JavaScript object id of the node wrapper.
 func (p GetOuterHTMLParams) WithObjectID(objectID runtime.RemoteObjectID) *GetOuterHTMLParams {
 	p.ObjectID = objectID
+	return &p
+}
+
+// WithIncludeShadowDOM include all shadow roots. Equals to false if not
+// specified.
+func (p GetOuterHTMLParams) WithIncludeShadowDOM(includeShadowDOM bool) *GetOuterHTMLParams {
+	p.IncludeShadowDOM = includeShadowDOM
 	return &p
 }
 
@@ -882,8 +899,8 @@ func (p *MoveToParams) Do(ctx context.Context) (nodeID cdp.NodeID, err error) {
 // getSearchResults to access search results or cancelSearch to end this search
 // session.
 type PerformSearchParams struct {
-	Query                     string `json:"query"`                                        // Plain text or query selector or XPath search query.
-	IncludeUserAgentShadowDOM bool   `json:"includeUserAgentShadowDOM,omitempty,omitzero"` // True to search in user agent shadow DOM.
+	Query                     string `json:"query"`                     // Plain text or query selector or XPath search query.
+	IncludeUserAgentShadowDOM bool   `json:"includeUserAgentShadowDOM"` // True to search in user agent shadow DOM.
 }
 
 // PerformSearch searches for a given string in the DOM tree. Use
@@ -897,7 +914,8 @@ type PerformSearchParams struct {
 //	query - Plain text or query selector or XPath search query.
 func PerformSearch(query string) *PerformSearchParams {
 	return &PerformSearchParams{
-		Query: query,
+		Query:                     query,
+		IncludeUserAgentShadowDOM: false,
 	}
 }
 
@@ -1246,9 +1264,9 @@ func (p *RemoveNodeParams) Do(ctx context.Context) (err error) {
 // immediate children are retrieved, but all children down to the specified
 // depth.
 type RequestChildNodesParams struct {
-	NodeID cdp.NodeID `json:"nodeId"`                    // Id of the node to get children for.
-	Depth  int64      `json:"depth,omitempty,omitzero"`  // The maximum depth at which children should be retrieved, defaults to 1. Use -1 for the entire subtree or provide an integer larger than 0.
-	Pierce bool       `json:"pierce,omitempty,omitzero"` // Whether or not iframes and shadow roots should be traversed when returning the sub-tree (default is false).
+	NodeID cdp.NodeID `json:"nodeId"`                   // Id of the node to get children for.
+	Depth  int64      `json:"depth,omitempty,omitzero"` // The maximum depth at which children should be retrieved, defaults to 1. Use -1 for the entire subtree or provide an integer larger than 0.
+	Pierce bool       `json:"pierce"`                   // Whether or not iframes and shadow roots should be traversed when returning the sub-tree (default is false).
 }
 
 // RequestChildNodes requests that children of the node with given id are
@@ -1264,6 +1282,7 @@ type RequestChildNodesParams struct {
 func RequestChildNodes(nodeID cdp.NodeID) *RequestChildNodesParams {
 	return &RequestChildNodesParams{
 		NodeID: nodeID,
+		Pierce: false,
 	}
 }
 
@@ -1822,22 +1841,24 @@ func (p *GetFrameOwnerParams) Do(ctx context.Context) (backendNodeID cdp.Backend
 
 // GetContainerForNodeParams returns the query container of the given node
 // based on container query conditions: containerName, physical and logical
-// axes, and whether it queries scroll-state. If no axes are provided and
-// queriesScrollState is false, the style container is returned, which is the
-// direct parent or the closest element with a matching container-name.
+// axes, and whether it queries scroll-state or anchored elements. If no axes
+// are provided and queriesScrollState is false, the style container is
+// returned, which is the direct parent or the closest element with a matching
+// container-name.
 type GetContainerForNodeParams struct {
 	NodeID             cdp.NodeID   `json:"nodeId"`
 	ContainerName      string       `json:"containerName,omitempty,omitzero"`
 	PhysicalAxes       PhysicalAxes `json:"physicalAxes,omitempty,omitzero"`
 	LogicalAxes        LogicalAxes  `json:"logicalAxes,omitempty,omitzero"`
-	QueriesScrollState bool         `json:"queriesScrollState,omitempty,omitzero"`
+	QueriesScrollState bool         `json:"queriesScrollState"`
+	QueriesAnchored    bool         `json:"queriesAnchored"`
 }
 
 // GetContainerForNode returns the query container of the given node based on
 // container query conditions: containerName, physical and logical axes, and
-// whether it queries scroll-state. If no axes are provided and
-// queriesScrollState is false, the style container is returned, which is the
-// direct parent or the closest element with a matching container-name.
+// whether it queries scroll-state or anchored elements. If no axes are provided
+// and queriesScrollState is false, the style container is returned, which is
+// the direct parent or the closest element with a matching container-name.
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/DOM#method-getContainerForNode
 //
@@ -1846,7 +1867,9 @@ type GetContainerForNodeParams struct {
 //	nodeID
 func GetContainerForNode(nodeID cdp.NodeID) *GetContainerForNodeParams {
 	return &GetContainerForNodeParams{
-		NodeID: nodeID,
+		NodeID:             nodeID,
+		QueriesScrollState: false,
+		QueriesAnchored:    false,
 	}
 }
 
@@ -1871,6 +1894,12 @@ func (p GetContainerForNodeParams) WithLogicalAxes(logicalAxes LogicalAxes) *Get
 // WithQueriesScrollState [no description].
 func (p GetContainerForNodeParams) WithQueriesScrollState(queriesScrollState bool) *GetContainerForNodeParams {
 	p.QueriesScrollState = queriesScrollState
+	return &p
+}
+
+// WithQueriesAnchored [no description].
+func (p GetContainerForNodeParams) WithQueriesAnchored(queriesAnchored bool) *GetContainerForNodeParams {
+	p.QueriesAnchored = queriesAnchored
 	return &p
 }
 
@@ -1988,6 +2017,50 @@ func (p *GetAnchorElementParams) Do(ctx context.Context) (nodeID cdp.NodeID, err
 	return res.NodeID, nil
 }
 
+// ForceShowPopoverParams when enabling, this API force-opens the popover
+// identified by nodeId and keeps it open until disabled.
+type ForceShowPopoverParams struct {
+	NodeID cdp.NodeID `json:"nodeId"` // Id of the popover HTMLElement
+	Enable bool       `json:"enable"` // If true, opens the popover and keeps it open. If false, closes the popover if it was previously force-opened.
+}
+
+// ForceShowPopover when enabling, this API force-opens the popover
+// identified by nodeId and keeps it open until disabled.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/DOM#method-forceShowPopover
+//
+// parameters:
+//
+//	nodeID - Id of the popover HTMLElement
+//	enable - If true, opens the popover and keeps it open. If false, closes the popover if it was previously force-opened.
+func ForceShowPopover(nodeID cdp.NodeID, enable bool) *ForceShowPopoverParams {
+	return &ForceShowPopoverParams{
+		NodeID: nodeID,
+		Enable: enable,
+	}
+}
+
+// ForceShowPopoverReturns return values.
+type ForceShowPopoverReturns struct {
+	NodeIDs []cdp.NodeID `json:"nodeIds,omitempty,omitzero"` // List of popovers that were closed in order to respect popover stacking order.
+}
+
+// Do executes DOM.forceShowPopover against the provided context.
+//
+// returns:
+//
+//	nodeIDs - List of popovers that were closed in order to respect popover stacking order.
+func (p *ForceShowPopoverParams) Do(ctx context.Context) (nodeIDs []cdp.NodeID, err error) {
+	// execute
+	var res ForceShowPopoverReturns
+	err = cdp.Execute(ctx, CommandForceShowPopover, p, &res)
+	if err != nil {
+		return nil, err
+	}
+
+	return res.NodeIDs, nil
+}
+
 // Command names.
 const (
 	CommandCollectClassNamesFromSubtree       = "DOM.collectClassNamesFromSubtree"
@@ -2038,4 +2111,5 @@ const (
 	CommandGetContainerForNode                = "DOM.getContainerForNode"
 	CommandGetQueryingDescendantsForContainer = "DOM.getQueryingDescendantsForContainer"
 	CommandGetAnchorElement                   = "DOM.getAnchorElement"
+	CommandForceShowPopover                   = "DOM.forceShowPopover"
 )

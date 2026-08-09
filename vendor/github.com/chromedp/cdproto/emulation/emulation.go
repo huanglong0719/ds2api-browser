@@ -92,7 +92,7 @@ func (p *SetFocusEmulationEnabledParams) Do(ctx context.Context) (err error) {
 // SetAutoDarkModeOverrideParams automatically render all web contents using
 // a dark theme.
 type SetAutoDarkModeOverrideParams struct {
-	Enabled bool `json:"enabled,omitempty,omitzero"` // Whether to enable or disable automatic dark mode. If not specified, any existing override will be cleared.
+	Enabled bool `json:"enabled"` // Whether to enable or disable automatic dark mode. If not specified, any existing override will be cleared.
 }
 
 // SetAutoDarkModeOverride automatically render all web contents using a dark
@@ -102,7 +102,9 @@ type SetAutoDarkModeOverrideParams struct {
 //
 // parameters:
 func SetAutoDarkModeOverride() *SetAutoDarkModeOverrideParams {
-	return &SetAutoDarkModeOverrideParams{}
+	return &SetAutoDarkModeOverrideParams{
+		Enabled: false,
+	}
 }
 
 // WithEnabled whether to enable or disable automatic dark mode. If not
@@ -170,24 +172,53 @@ func (p *SetDefaultBackgroundColorOverrideParams) Do(ctx context.Context) (err e
 	return cdp.Execute(ctx, CommandSetDefaultBackgroundColorOverride, p, nil)
 }
 
+// SetSafeAreaInsetsOverrideParams overrides the values for
+// env(safe-area-inset-*) and env(safe-area-max-inset-*). Unset values will
+// cause the respective variables to be undefined, even if previously
+// overridden.
+type SetSafeAreaInsetsOverrideParams struct {
+	Insets *SafeAreaInsets `json:"insets"`
+}
+
+// SetSafeAreaInsetsOverride overrides the values for env(safe-area-inset-*)
+// and env(safe-area-max-inset-*). Unset values will cause the respective
+// variables to be undefined, even if previously overridden.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Emulation#method-setSafeAreaInsetsOverride
+//
+// parameters:
+//
+//	insets
+func SetSafeAreaInsetsOverride(insets *SafeAreaInsets) *SetSafeAreaInsetsOverrideParams {
+	return &SetSafeAreaInsetsOverrideParams{
+		Insets: insets,
+	}
+}
+
+// Do executes Emulation.setSafeAreaInsetsOverride against the provided context.
+func (p *SetSafeAreaInsetsOverrideParams) Do(ctx context.Context) (err error) {
+	return cdp.Execute(ctx, CommandSetSafeAreaInsetsOverride, p, nil)
+}
+
 // SetDeviceMetricsOverrideParams overrides the values of device screen
 // dimensions (window.screen.width, window.screen.height, window.innerWidth,
 // window.innerHeight, and "device-width"/"device-height"-related CSS media
 // query results).
 type SetDeviceMetricsOverrideParams struct {
-	Width              int64              `json:"width"`                                 // Overriding width value in pixels (minimum 0, maximum 10000000). 0 disables the override.
-	Height             int64              `json:"height"`                                // Overriding height value in pixels (minimum 0, maximum 10000000). 0 disables the override.
-	DeviceScaleFactor  float64            `json:"deviceScaleFactor"`                     // Overriding device scale factor value. 0 disables the override.
-	Mobile             bool               `json:"mobile"`                                // Whether to emulate mobile device. This includes viewport meta tag, overlay scrollbars, text autosizing and more.
-	Scale              float64            `json:"scale,omitempty,omitzero"`              // Scale to apply to resulting view image.
-	ScreenWidth        int64              `json:"screenWidth,omitempty,omitzero"`        // Overriding screen width value in pixels (minimum 0, maximum 10000000).
-	ScreenHeight       int64              `json:"screenHeight,omitempty,omitzero"`       // Overriding screen height value in pixels (minimum 0, maximum 10000000).
-	PositionX          int64              `json:"positionX,omitempty,omitzero"`          // Overriding view X position on screen in pixels (minimum 0, maximum 10000000).
-	PositionY          int64              `json:"positionY,omitempty,omitzero"`          // Overriding view Y position on screen in pixels (minimum 0, maximum 10000000).
-	DontSetVisibleSize bool               `json:"dontSetVisibleSize,omitempty,omitzero"` // Do not set visible view size, rely upon explicit setVisibleSize call.
-	ScreenOrientation  *ScreenOrientation `json:"screenOrientation,omitempty,omitzero"`  // Screen orientation override.
-	Viewport           *page.Viewport     `json:"viewport,omitempty,omitzero"`           // If set, the visible area of the page will be overridden to this viewport. This viewport change is not observed by the page, e.g. viewport-relative elements do not change positions.
-	DisplayFeature     *DisplayFeature    `json:"displayFeature,omitempty,omitzero"`     // If set, the display feature of a multi-segment screen. If not set, multi-segment support is turned-off.
+	Width                          int64                                 `json:"width"`                                // Overriding width value in pixels (minimum 0, maximum 10000000). 0 disables the override.
+	Height                         int64                                 `json:"height"`                               // Overriding height value in pixels (minimum 0, maximum 10000000). 0 disables the override.
+	DeviceScaleFactor              float64                               `json:"deviceScaleFactor"`                    // Overriding device scale factor value. 0 disables the override.
+	Mobile                         bool                                  `json:"mobile"`                               // Whether to emulate mobile device. This includes viewport meta tag, overlay scrollbars, text autosizing and more.
+	Scale                          float64                               `json:"scale,omitempty,omitzero"`             // Scale to apply to resulting view image.
+	ScreenWidth                    int64                                 `json:"screenWidth,omitempty,omitzero"`       // Overriding screen width value in pixels (minimum 0, maximum 10000000).
+	ScreenHeight                   int64                                 `json:"screenHeight,omitempty,omitzero"`      // Overriding screen height value in pixels (minimum 0, maximum 10000000).
+	PositionX                      int64                                 `json:"positionX,omitempty,omitzero"`         // Overriding view X position on screen in pixels (minimum 0, maximum 10000000).
+	PositionY                      int64                                 `json:"positionY,omitempty,omitzero"`         // Overriding view Y position on screen in pixels (minimum 0, maximum 10000000).
+	DontSetVisibleSize             bool                                  `json:"dontSetVisibleSize"`                   // Do not set visible view size, rely upon explicit setVisibleSize call.
+	ScreenOrientation              *ScreenOrientation                    `json:"screenOrientation,omitempty,omitzero"` // Screen orientation override.
+	Viewport                       *page.Viewport                        `json:"viewport,omitempty,omitzero"`          // If set, the visible area of the page will be overridden to this viewport. This viewport change is not observed by the page, e.g. viewport-relative elements do not change positions.
+	ScrollbarType                  SetDeviceMetricsOverrideScrollbarType `json:"scrollbarType,omitempty,omitzero"`     // Scrollbar type. Default: default.
+	ScreenOrientationLockEmulation bool                                  `json:"screenOrientationLockEmulation"`       // If set to true, enables screen orientation lock emulation, which intercepts screen.orientation.lock() calls from the page and reports orientation changes via screenOrientationLockChanged events. This is useful for emulating mobile device orientation lock behavior in responsive design mode.
 }
 
 // SetDeviceMetricsOverride overrides the values of device screen dimensions
@@ -205,10 +236,12 @@ type SetDeviceMetricsOverrideParams struct {
 //	mobile - Whether to emulate mobile device. This includes viewport meta tag, overlay scrollbars, text autosizing and more.
 func SetDeviceMetricsOverride(width int64, height int64, deviceScaleFactor float64, mobile bool) *SetDeviceMetricsOverrideParams {
 	return &SetDeviceMetricsOverrideParams{
-		Width:             width,
-		Height:            height,
-		DeviceScaleFactor: deviceScaleFactor,
-		Mobile:            mobile,
+		Width:                          width,
+		Height:                         height,
+		DeviceScaleFactor:              deviceScaleFactor,
+		Mobile:                         mobile,
+		DontSetVisibleSize:             false,
+		ScreenOrientationLockEmulation: false,
 	}
 }
 
@@ -267,10 +300,19 @@ func (p SetDeviceMetricsOverrideParams) WithViewport(viewport *page.Viewport) *S
 	return &p
 }
 
-// WithDisplayFeature if set, the display feature of a multi-segment screen.
-// If not set, multi-segment support is turned-off.
-func (p SetDeviceMetricsOverrideParams) WithDisplayFeature(displayFeature *DisplayFeature) *SetDeviceMetricsOverrideParams {
-	p.DisplayFeature = displayFeature
+// WithScrollbarType scrollbar type. Default: default.
+func (p SetDeviceMetricsOverrideParams) WithScrollbarType(scrollbarType SetDeviceMetricsOverrideScrollbarType) *SetDeviceMetricsOverrideParams {
+	p.ScrollbarType = scrollbarType
+	return &p
+}
+
+// WithScreenOrientationLockEmulation if set to true, enables screen
+// orientation lock emulation, which intercepts screen.orientation.lock() calls
+// from the page and reports orientation changes via
+// screenOrientationLockChanged events. This is useful for emulating mobile
+// device orientation lock behavior in responsive design mode.
+func (p SetDeviceMetricsOverrideParams) WithScreenOrientationLockEmulation(screenOrientationLockEmulation bool) *SetDeviceMetricsOverrideParams {
+	p.ScreenOrientationLockEmulation = screenOrientationLockEmulation
 	return &p
 }
 
@@ -325,6 +367,54 @@ func ClearDevicePostureOverride() *ClearDevicePostureOverrideParams {
 // Do executes Emulation.clearDevicePostureOverride against the provided context.
 func (p *ClearDevicePostureOverrideParams) Do(ctx context.Context) (err error) {
 	return cdp.Execute(ctx, CommandClearDevicePostureOverride, nil, nil)
+}
+
+// SetDisplayFeaturesOverrideParams start using the given display features to
+// pupulate the Viewport Segments API. This override can also be set in
+// setDeviceMetricsOverride().
+type SetDisplayFeaturesOverrideParams struct {
+	Features []*DisplayFeature `json:"features"`
+}
+
+// SetDisplayFeaturesOverride start using the given display features to
+// pupulate the Viewport Segments API. This override can also be set in
+// setDeviceMetricsOverride().
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Emulation#method-setDisplayFeaturesOverride
+//
+// parameters:
+//
+//	features
+func SetDisplayFeaturesOverride(features []*DisplayFeature) *SetDisplayFeaturesOverrideParams {
+	return &SetDisplayFeaturesOverrideParams{
+		Features: features,
+	}
+}
+
+// Do executes Emulation.setDisplayFeaturesOverride against the provided context.
+func (p *SetDisplayFeaturesOverrideParams) Do(ctx context.Context) (err error) {
+	return cdp.Execute(ctx, CommandSetDisplayFeaturesOverride, p, nil)
+}
+
+// ClearDisplayFeaturesOverrideParams clears the display features override
+// set with either setDeviceMetricsOverride() or setDisplayFeaturesOverride()
+// and starts using display features from the platform again. Does nothing if no
+// override is set.
+type ClearDisplayFeaturesOverrideParams struct{}
+
+// ClearDisplayFeaturesOverride clears the display features override set with
+// either setDeviceMetricsOverride() or setDisplayFeaturesOverride() and starts
+// using display features from the platform again. Does nothing if no override
+// is set.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Emulation#method-clearDisplayFeaturesOverride
+func ClearDisplayFeaturesOverride() *ClearDisplayFeaturesOverrideParams {
+	return &ClearDisplayFeaturesOverrideParams{}
+}
+
+// Do executes Emulation.clearDisplayFeaturesOverride against the provided context.
+func (p *ClearDisplayFeaturesOverrideParams) Do(ctx context.Context) (err error) {
+	return cdp.Execute(ctx, CommandClearDisplayFeaturesOverride, nil, nil)
 }
 
 // SetScrollbarsHiddenParams [no description].
@@ -461,16 +551,45 @@ func (p *SetEmulatedVisionDeficiencyParams) Do(ctx context.Context) (err error) 
 	return cdp.Execute(ctx, CommandSetEmulatedVisionDeficiency, p, nil)
 }
 
+// SetEmulatedOSTextScaleParams emulates the given OS text scale.
+type SetEmulatedOSTextScaleParams struct {
+	Scale float64 `json:"scale,omitempty,omitzero"`
+}
+
+// SetEmulatedOSTextScale emulates the given OS text scale.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Emulation#method-setEmulatedOSTextScale
+//
+// parameters:
+func SetEmulatedOSTextScale() *SetEmulatedOSTextScaleParams {
+	return &SetEmulatedOSTextScaleParams{}
+}
+
+// WithScale [no description].
+func (p SetEmulatedOSTextScaleParams) WithScale(scale float64) *SetEmulatedOSTextScaleParams {
+	p.Scale = scale
+	return &p
+}
+
+// Do executes Emulation.setEmulatedOSTextScale against the provided context.
+func (p *SetEmulatedOSTextScaleParams) Do(ctx context.Context) (err error) {
+	return cdp.Execute(ctx, CommandSetEmulatedOSTextScale, p, nil)
+}
+
 // SetGeolocationOverrideParams overrides the Geolocation Position or Error.
-// Omitting any of the parameters emulates position unavailable.
+// Omitting latitude, longitude or accuracy emulates position unavailable.
 type SetGeolocationOverrideParams struct {
-	Latitude  float64 `json:"latitude,omitempty,omitzero"`  // Mock latitude
-	Longitude float64 `json:"longitude,omitempty,omitzero"` // Mock longitude
-	Accuracy  float64 `json:"accuracy,omitempty,omitzero"`  // Mock accuracy
+	Latitude         float64 `json:"latitude,omitempty,omitzero"`         // Mock latitude
+	Longitude        float64 `json:"longitude,omitempty,omitzero"`        // Mock longitude
+	Accuracy         float64 `json:"accuracy,omitempty,omitzero"`         // Mock accuracy
+	Altitude         float64 `json:"altitude,omitempty,omitzero"`         // Mock altitude
+	AltitudeAccuracy float64 `json:"altitudeAccuracy,omitempty,omitzero"` // Mock altitudeAccuracy
+	Heading          float64 `json:"heading,omitempty,omitzero"`          // Mock heading
+	Speed            float64 `json:"speed,omitempty,omitzero"`            // Mock speed
 }
 
 // SetGeolocationOverride overrides the Geolocation Position or Error.
-// Omitting any of the parameters emulates position unavailable.
+// Omitting latitude, longitude or accuracy emulates position unavailable.
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/Emulation#method-setGeolocationOverride
 //
@@ -494,6 +613,30 @@ func (p SetGeolocationOverrideParams) WithLongitude(longitude float64) *SetGeolo
 // WithAccuracy mock accuracy.
 func (p SetGeolocationOverrideParams) WithAccuracy(accuracy float64) *SetGeolocationOverrideParams {
 	p.Accuracy = accuracy
+	return &p
+}
+
+// WithAltitude mock altitude.
+func (p SetGeolocationOverrideParams) WithAltitude(altitude float64) *SetGeolocationOverrideParams {
+	p.Altitude = altitude
+	return &p
+}
+
+// WithAltitudeAccuracy mock altitudeAccuracy.
+func (p SetGeolocationOverrideParams) WithAltitudeAccuracy(altitudeAccuracy float64) *SetGeolocationOverrideParams {
+	p.AltitudeAccuracy = altitudeAccuracy
+	return &p
+}
+
+// WithHeading mock heading.
+func (p SetGeolocationOverrideParams) WithHeading(heading float64) *SetGeolocationOverrideParams {
+	p.Heading = heading
+	return &p
+}
+
+// WithSpeed mock speed.
+func (p SetGeolocationOverrideParams) WithSpeed(speed float64) *SetGeolocationOverrideParams {
+	p.Speed = speed
 	return &p
 }
 
@@ -649,7 +792,8 @@ func (p *SetPressureSourceOverrideEnabledParams) Do(ctx context.Context) (err er
 	return cdp.Execute(ctx, CommandSetPressureSourceOverrideEnabled, p, nil)
 }
 
-// SetPressureStateOverrideParams provides a given pressure state that will
+// SetPressureStateOverrideParams tODO: OBSOLETE: To remove when
+// setPressureDataOverride is merged. Provides a given pressure state that will
 // be processed and eventually be delivered to PressureObserver users. |source|
 // must have been previously overridden by setPressureSourceOverrideEnabled.
 type SetPressureStateOverrideParams struct {
@@ -657,8 +801,9 @@ type SetPressureStateOverrideParams struct {
 	State  PressureState  `json:"state"`
 }
 
-// SetPressureStateOverride provides a given pressure state that will be
-// processed and eventually be delivered to PressureObserver users. |source|
+// SetPressureStateOverride tODO: OBSOLETE: To remove when
+// setPressureDataOverride is merged. Provides a given pressure state that will
+// be processed and eventually be delivered to PressureObserver users. |source|
 // must have been previously overridden by setPressureSourceOverrideEnabled.
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/Emulation#method-setPressureStateOverride
@@ -677,6 +822,43 @@ func SetPressureStateOverride(source PressureSource, state PressureState) *SetPr
 // Do executes Emulation.setPressureStateOverride against the provided context.
 func (p *SetPressureStateOverrideParams) Do(ctx context.Context) (err error) {
 	return cdp.Execute(ctx, CommandSetPressureStateOverride, p, nil)
+}
+
+// SetPressureDataOverrideParams provides a given pressure data set that will
+// be processed and eventually be delivered to PressureObserver users. |source|
+// must have been previously overridden by setPressureSourceOverrideEnabled.
+type SetPressureDataOverrideParams struct {
+	Source                  PressureSource `json:"source"`
+	State                   PressureState  `json:"state"`
+	OwnContributionEstimate float64        `json:"ownContributionEstimate,omitempty,omitzero"`
+}
+
+// SetPressureDataOverride provides a given pressure data set that will be
+// processed and eventually be delivered to PressureObserver users. |source|
+// must have been previously overridden by setPressureSourceOverrideEnabled.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Emulation#method-setPressureDataOverride
+//
+// parameters:
+//
+//	source
+//	state
+func SetPressureDataOverride(source PressureSource, state PressureState) *SetPressureDataOverrideParams {
+	return &SetPressureDataOverrideParams{
+		Source: source,
+		State:  state,
+	}
+}
+
+// WithOwnContributionEstimate [no description].
+func (p SetPressureDataOverrideParams) WithOwnContributionEstimate(ownContributionEstimate float64) *SetPressureDataOverrideParams {
+	p.OwnContributionEstimate = ownContributionEstimate
+	return &p
+}
+
+// Do executes Emulation.setPressureDataOverride against the provided context.
+func (p *SetPressureDataOverrideParams) Do(ctx context.Context) (err error) {
+	return cdp.Execute(ctx, CommandSetPressureDataOverride, p, nil)
 }
 
 // SetIdleOverrideParams overrides the Idle state.
@@ -942,6 +1124,35 @@ func (p *SetDisabledImageTypesParams) Do(ctx context.Context) (err error) {
 	return cdp.Execute(ctx, CommandSetDisabledImageTypes, p, nil)
 }
 
+// SetDataSaverOverrideParams override the value of
+// navigator.connection.saveData.
+type SetDataSaverOverrideParams struct {
+	DataSaverEnabled bool `json:"dataSaverEnabled"` // Override value. Omitting the parameter disables the override.
+}
+
+// SetDataSaverOverride override the value of navigator.connection.saveData.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Emulation#method-setDataSaverOverride
+//
+// parameters:
+func SetDataSaverOverride() *SetDataSaverOverrideParams {
+	return &SetDataSaverOverrideParams{
+		DataSaverEnabled: false,
+	}
+}
+
+// WithDataSaverEnabled override value. Omitting the parameter disables the
+// override.
+func (p SetDataSaverOverrideParams) WithDataSaverEnabled(dataSaverEnabled bool) *SetDataSaverOverrideParams {
+	p.DataSaverEnabled = dataSaverEnabled
+	return &p
+}
+
+// Do executes Emulation.setDataSaverOverride against the provided context.
+func (p *SetDataSaverOverrideParams) Do(ctx context.Context) (err error) {
+	return cdp.Execute(ctx, CommandSetDataSaverOverride, p, nil)
+}
+
 // SetHardwareConcurrencyOverrideParams [no description].
 type SetHardwareConcurrencyOverrideParams struct {
 	HardwareConcurrency int64 `json:"hardwareConcurrency"` // Hardware concurrency to report
@@ -1035,39 +1246,378 @@ func (p *SetAutomationOverrideParams) Do(ctx context.Context) (err error) {
 	return cdp.Execute(ctx, CommandSetAutomationOverride, p, nil)
 }
 
+// SetSmallViewportHeightDifferenceOverrideParams allows overriding the
+// difference between the small and large viewport sizes, which determine the
+// value of the svh and lvh unit, respectively. Only supported for top-level
+// frames.
+type SetSmallViewportHeightDifferenceOverrideParams struct {
+	Difference int64 `json:"difference"` // This will cause an element of size 100svh to be difference pixels smaller than an element of size 100lvh.
+}
+
+// SetSmallViewportHeightDifferenceOverride allows overriding the difference
+// between the small and large viewport sizes, which determine the value of the
+// svh and lvh unit, respectively. Only supported for top-level frames.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Emulation#method-setSmallViewportHeightDifferenceOverride
+//
+// parameters:
+//
+//	difference - This will cause an element of size 100svh to be difference pixels smaller than an element of size 100lvh.
+func SetSmallViewportHeightDifferenceOverride(difference int64) *SetSmallViewportHeightDifferenceOverrideParams {
+	return &SetSmallViewportHeightDifferenceOverrideParams{
+		Difference: difference,
+	}
+}
+
+// Do executes Emulation.setSmallViewportHeightDifferenceOverride against the provided context.
+func (p *SetSmallViewportHeightDifferenceOverrideParams) Do(ctx context.Context) (err error) {
+	return cdp.Execute(ctx, CommandSetSmallViewportHeightDifferenceOverride, p, nil)
+}
+
+// GetScreenInfosParams returns device's screen configuration. In headful
+// mode, the physical screens configuration is returned, whereas in headless
+// mode, a virtual headless screen configuration is provided instead.
+type GetScreenInfosParams struct{}
+
+// GetScreenInfos returns device's screen configuration. In headful mode, the
+// physical screens configuration is returned, whereas in headless mode, a
+// virtual headless screen configuration is provided instead.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Emulation#method-getScreenInfos
+func GetScreenInfos() *GetScreenInfosParams {
+	return &GetScreenInfosParams{}
+}
+
+// GetScreenInfosReturns return values.
+type GetScreenInfosReturns struct {
+	ScreenInfos []*ScreenInfo `json:"screenInfos,omitempty,omitzero"`
+}
+
+// Do executes Emulation.getScreenInfos against the provided context.
+//
+// returns:
+//
+//	screenInfos
+func (p *GetScreenInfosParams) Do(ctx context.Context) (screenInfos []*ScreenInfo, err error) {
+	// execute
+	var res GetScreenInfosReturns
+	err = cdp.Execute(ctx, CommandGetScreenInfos, nil, &res)
+	if err != nil {
+		return nil, err
+	}
+
+	return res.ScreenInfos, nil
+}
+
+// AddScreenParams add a new screen to the device. Only supported in headless
+// mode.
+type AddScreenParams struct {
+	Left             int64           `json:"left"`                                // Offset of the left edge of the screen in pixels.
+	Top              int64           `json:"top"`                                 // Offset of the top edge of the screen in pixels.
+	Width            int64           `json:"width"`                               // The width of the screen in pixels.
+	Height           int64           `json:"height"`                              // The height of the screen in pixels.
+	WorkAreaInsets   *WorkAreaInsets `json:"workAreaInsets,omitempty,omitzero"`   // Specifies the screen's work area. Default is entire screen.
+	DevicePixelRatio float64         `json:"devicePixelRatio,omitempty,omitzero"` // Specifies the screen's device pixel ratio. Default is 1.
+	Rotation         int64           `json:"rotation,omitempty,omitzero"`         // Specifies the screen's rotation angle. Available values are 0, 90, 180 and 270. Default is 0.
+	ColorDepth       int64           `json:"colorDepth,omitempty,omitzero"`       // Specifies the screen's color depth in bits. Default is 24.
+	Label            string          `json:"label,omitempty,omitzero"`            // Specifies the descriptive label for the screen. Default is none.
+	IsInternal       bool            `json:"isInternal"`                          // Indicates whether the screen is internal to the device or external, attached to the device. Default is false.
+}
+
+// AddScreen add a new screen to the device. Only supported in headless mode.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Emulation#method-addScreen
+//
+// parameters:
+//
+//	left - Offset of the left edge of the screen in pixels.
+//	top - Offset of the top edge of the screen in pixels.
+//	width - The width of the screen in pixels.
+//	height - The height of the screen in pixels.
+func AddScreen(left int64, top int64, width int64, height int64) *AddScreenParams {
+	return &AddScreenParams{
+		Left:       left,
+		Top:        top,
+		Width:      width,
+		Height:     height,
+		IsInternal: false,
+	}
+}
+
+// WithWorkAreaInsets specifies the screen's work area. Default is entire
+// screen.
+func (p AddScreenParams) WithWorkAreaInsets(workAreaInsets *WorkAreaInsets) *AddScreenParams {
+	p.WorkAreaInsets = workAreaInsets
+	return &p
+}
+
+// WithDevicePixelRatio specifies the screen's device pixel ratio. Default is
+// 1.
+func (p AddScreenParams) WithDevicePixelRatio(devicePixelRatio float64) *AddScreenParams {
+	p.DevicePixelRatio = devicePixelRatio
+	return &p
+}
+
+// WithRotation specifies the screen's rotation angle. Available values are
+// 0, 90, 180 and 270. Default is 0.
+func (p AddScreenParams) WithRotation(rotation int64) *AddScreenParams {
+	p.Rotation = rotation
+	return &p
+}
+
+// WithColorDepth specifies the screen's color depth in bits. Default is 24.
+func (p AddScreenParams) WithColorDepth(colorDepth int64) *AddScreenParams {
+	p.ColorDepth = colorDepth
+	return &p
+}
+
+// WithLabel specifies the descriptive label for the screen. Default is none.
+func (p AddScreenParams) WithLabel(label string) *AddScreenParams {
+	p.Label = label
+	return &p
+}
+
+// WithIsInternal indicates whether the screen is internal to the device or
+// external, attached to the device. Default is false.
+func (p AddScreenParams) WithIsInternal(isInternal bool) *AddScreenParams {
+	p.IsInternal = isInternal
+	return &p
+}
+
+// AddScreenReturns return values.
+type AddScreenReturns struct {
+	ScreenInfo *ScreenInfo `json:"screenInfo,omitempty,omitzero"`
+}
+
+// Do executes Emulation.addScreen against the provided context.
+//
+// returns:
+//
+//	screenInfo
+func (p *AddScreenParams) Do(ctx context.Context) (screenInfo *ScreenInfo, err error) {
+	// execute
+	var res AddScreenReturns
+	err = cdp.Execute(ctx, CommandAddScreen, p, &res)
+	if err != nil {
+		return nil, err
+	}
+
+	return res.ScreenInfo, nil
+}
+
+// UpdateScreenParams updates specified screen parameters. Only supported in
+// headless mode.
+type UpdateScreenParams struct {
+	ScreenID         ScreenID        `json:"screenId"`                            // Target screen identifier.
+	Left             int64           `json:"left,omitempty,omitzero"`             // Offset of the left edge of the screen in pixels.
+	Top              int64           `json:"top,omitempty,omitzero"`              // Offset of the top edge of the screen in pixels.
+	Width            int64           `json:"width,omitempty,omitzero"`            // The width of the screen in pixels.
+	Height           int64           `json:"height,omitempty,omitzero"`           // The height of the screen in pixels.
+	WorkAreaInsets   *WorkAreaInsets `json:"workAreaInsets,omitempty,omitzero"`   // Specifies the screen's work area.
+	DevicePixelRatio float64         `json:"devicePixelRatio,omitempty,omitzero"` // Specifies the screen's device pixel ratio.
+	Rotation         int64           `json:"rotation,omitempty,omitzero"`         // Specifies the screen's rotation angle. Available values are 0, 90, 180 and 270.
+	ColorDepth       int64           `json:"colorDepth,omitempty,omitzero"`       // Specifies the screen's color depth in bits.
+	Label            string          `json:"label,omitempty,omitzero"`            // Specifies the descriptive label for the screen.
+	IsInternal       bool            `json:"isInternal"`                          // Indicates whether the screen is internal to the device or external, attached to the device. Default is false.
+}
+
+// UpdateScreen updates specified screen parameters. Only supported in
+// headless mode.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Emulation#method-updateScreen
+//
+// parameters:
+//
+//	screenID - Target screen identifier.
+func UpdateScreen(screenID ScreenID) *UpdateScreenParams {
+	return &UpdateScreenParams{
+		ScreenID:   screenID,
+		IsInternal: false,
+	}
+}
+
+// WithLeft offset of the left edge of the screen in pixels.
+func (p UpdateScreenParams) WithLeft(left int64) *UpdateScreenParams {
+	p.Left = left
+	return &p
+}
+
+// WithTop offset of the top edge of the screen in pixels.
+func (p UpdateScreenParams) WithTop(top int64) *UpdateScreenParams {
+	p.Top = top
+	return &p
+}
+
+// WithWidth the width of the screen in pixels.
+func (p UpdateScreenParams) WithWidth(width int64) *UpdateScreenParams {
+	p.Width = width
+	return &p
+}
+
+// WithHeight the height of the screen in pixels.
+func (p UpdateScreenParams) WithHeight(height int64) *UpdateScreenParams {
+	p.Height = height
+	return &p
+}
+
+// WithWorkAreaInsets specifies the screen's work area.
+func (p UpdateScreenParams) WithWorkAreaInsets(workAreaInsets *WorkAreaInsets) *UpdateScreenParams {
+	p.WorkAreaInsets = workAreaInsets
+	return &p
+}
+
+// WithDevicePixelRatio specifies the screen's device pixel ratio.
+func (p UpdateScreenParams) WithDevicePixelRatio(devicePixelRatio float64) *UpdateScreenParams {
+	p.DevicePixelRatio = devicePixelRatio
+	return &p
+}
+
+// WithRotation specifies the screen's rotation angle. Available values are
+// 0, 90, 180 and 270.
+func (p UpdateScreenParams) WithRotation(rotation int64) *UpdateScreenParams {
+	p.Rotation = rotation
+	return &p
+}
+
+// WithColorDepth specifies the screen's color depth in bits.
+func (p UpdateScreenParams) WithColorDepth(colorDepth int64) *UpdateScreenParams {
+	p.ColorDepth = colorDepth
+	return &p
+}
+
+// WithLabel specifies the descriptive label for the screen.
+func (p UpdateScreenParams) WithLabel(label string) *UpdateScreenParams {
+	p.Label = label
+	return &p
+}
+
+// WithIsInternal indicates whether the screen is internal to the device or
+// external, attached to the device. Default is false.
+func (p UpdateScreenParams) WithIsInternal(isInternal bool) *UpdateScreenParams {
+	p.IsInternal = isInternal
+	return &p
+}
+
+// UpdateScreenReturns return values.
+type UpdateScreenReturns struct {
+	ScreenInfo *ScreenInfo `json:"screenInfo,omitempty,omitzero"`
+}
+
+// Do executes Emulation.updateScreen against the provided context.
+//
+// returns:
+//
+//	screenInfo
+func (p *UpdateScreenParams) Do(ctx context.Context) (screenInfo *ScreenInfo, err error) {
+	// execute
+	var res UpdateScreenReturns
+	err = cdp.Execute(ctx, CommandUpdateScreen, p, &res)
+	if err != nil {
+		return nil, err
+	}
+
+	return res.ScreenInfo, nil
+}
+
+// RemoveScreenParams remove screen from the device. Only supported in
+// headless mode.
+type RemoveScreenParams struct {
+	ScreenID ScreenID `json:"screenId"`
+}
+
+// RemoveScreen remove screen from the device. Only supported in headless
+// mode.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Emulation#method-removeScreen
+//
+// parameters:
+//
+//	screenID
+func RemoveScreen(screenID ScreenID) *RemoveScreenParams {
+	return &RemoveScreenParams{
+		ScreenID: screenID,
+	}
+}
+
+// Do executes Emulation.removeScreen against the provided context.
+func (p *RemoveScreenParams) Do(ctx context.Context) (err error) {
+	return cdp.Execute(ctx, CommandRemoveScreen, p, nil)
+}
+
+// SetPrimaryScreenParams set primary screen. Only supported in headless
+// mode. Note that this changes the coordinate system origin to the top-left of
+// the new primary screen, updating the bounds and work areas of all existing
+// screens accordingly.
+type SetPrimaryScreenParams struct {
+	ScreenID ScreenID `json:"screenId"`
+}
+
+// SetPrimaryScreen set primary screen. Only supported in headless mode. Note
+// that this changes the coordinate system origin to the top-left of the new
+// primary screen, updating the bounds and work areas of all existing screens
+// accordingly.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Emulation#method-setPrimaryScreen
+//
+// parameters:
+//
+//	screenID
+func SetPrimaryScreen(screenID ScreenID) *SetPrimaryScreenParams {
+	return &SetPrimaryScreenParams{
+		ScreenID: screenID,
+	}
+}
+
+// Do executes Emulation.setPrimaryScreen against the provided context.
+func (p *SetPrimaryScreenParams) Do(ctx context.Context) (err error) {
+	return cdp.Execute(ctx, CommandSetPrimaryScreen, p, nil)
+}
+
 // Command names.
 const (
-	CommandClearDeviceMetricsOverride        = "Emulation.clearDeviceMetricsOverride"
-	CommandClearGeolocationOverride          = "Emulation.clearGeolocationOverride"
-	CommandResetPageScaleFactor              = "Emulation.resetPageScaleFactor"
-	CommandSetFocusEmulationEnabled          = "Emulation.setFocusEmulationEnabled"
-	CommandSetAutoDarkModeOverride           = "Emulation.setAutoDarkModeOverride"
-	CommandSetCPUThrottlingRate              = "Emulation.setCPUThrottlingRate"
-	CommandSetDefaultBackgroundColorOverride = "Emulation.setDefaultBackgroundColorOverride"
-	CommandSetDeviceMetricsOverride          = "Emulation.setDeviceMetricsOverride"
-	CommandSetDevicePostureOverride          = "Emulation.setDevicePostureOverride"
-	CommandClearDevicePostureOverride        = "Emulation.clearDevicePostureOverride"
-	CommandSetScrollbarsHidden               = "Emulation.setScrollbarsHidden"
-	CommandSetDocumentCookieDisabled         = "Emulation.setDocumentCookieDisabled"
-	CommandSetEmitTouchEventsForMouse        = "Emulation.setEmitTouchEventsForMouse"
-	CommandSetEmulatedMedia                  = "Emulation.setEmulatedMedia"
-	CommandSetEmulatedVisionDeficiency       = "Emulation.setEmulatedVisionDeficiency"
-	CommandSetGeolocationOverride            = "Emulation.setGeolocationOverride"
-	CommandGetOverriddenSensorInformation    = "Emulation.getOverriddenSensorInformation"
-	CommandSetSensorOverrideEnabled          = "Emulation.setSensorOverrideEnabled"
-	CommandSetSensorOverrideReadings         = "Emulation.setSensorOverrideReadings"
-	CommandSetPressureSourceOverrideEnabled  = "Emulation.setPressureSourceOverrideEnabled"
-	CommandSetPressureStateOverride          = "Emulation.setPressureStateOverride"
-	CommandSetIdleOverride                   = "Emulation.setIdleOverride"
-	CommandClearIdleOverride                 = "Emulation.clearIdleOverride"
-	CommandSetPageScaleFactor                = "Emulation.setPageScaleFactor"
-	CommandSetScriptExecutionDisabled        = "Emulation.setScriptExecutionDisabled"
-	CommandSetTouchEmulationEnabled          = "Emulation.setTouchEmulationEnabled"
-	CommandSetVirtualTimePolicy              = "Emulation.setVirtualTimePolicy"
-	CommandSetLocaleOverride                 = "Emulation.setLocaleOverride"
-	CommandSetTimezoneOverride               = "Emulation.setTimezoneOverride"
-	CommandSetDisabledImageTypes             = "Emulation.setDisabledImageTypes"
-	CommandSetHardwareConcurrencyOverride    = "Emulation.setHardwareConcurrencyOverride"
-	CommandSetUserAgentOverride              = "Emulation.setUserAgentOverride"
-	CommandSetAutomationOverride             = "Emulation.setAutomationOverride"
+	CommandClearDeviceMetricsOverride               = "Emulation.clearDeviceMetricsOverride"
+	CommandClearGeolocationOverride                 = "Emulation.clearGeolocationOverride"
+	CommandResetPageScaleFactor                     = "Emulation.resetPageScaleFactor"
+	CommandSetFocusEmulationEnabled                 = "Emulation.setFocusEmulationEnabled"
+	CommandSetAutoDarkModeOverride                  = "Emulation.setAutoDarkModeOverride"
+	CommandSetCPUThrottlingRate                     = "Emulation.setCPUThrottlingRate"
+	CommandSetDefaultBackgroundColorOverride        = "Emulation.setDefaultBackgroundColorOverride"
+	CommandSetSafeAreaInsetsOverride                = "Emulation.setSafeAreaInsetsOverride"
+	CommandSetDeviceMetricsOverride                 = "Emulation.setDeviceMetricsOverride"
+	CommandSetDevicePostureOverride                 = "Emulation.setDevicePostureOverride"
+	CommandClearDevicePostureOverride               = "Emulation.clearDevicePostureOverride"
+	CommandSetDisplayFeaturesOverride               = "Emulation.setDisplayFeaturesOverride"
+	CommandClearDisplayFeaturesOverride             = "Emulation.clearDisplayFeaturesOverride"
+	CommandSetScrollbarsHidden                      = "Emulation.setScrollbarsHidden"
+	CommandSetDocumentCookieDisabled                = "Emulation.setDocumentCookieDisabled"
+	CommandSetEmitTouchEventsForMouse               = "Emulation.setEmitTouchEventsForMouse"
+	CommandSetEmulatedMedia                         = "Emulation.setEmulatedMedia"
+	CommandSetEmulatedVisionDeficiency              = "Emulation.setEmulatedVisionDeficiency"
+	CommandSetEmulatedOSTextScale                   = "Emulation.setEmulatedOSTextScale"
+	CommandSetGeolocationOverride                   = "Emulation.setGeolocationOverride"
+	CommandGetOverriddenSensorInformation           = "Emulation.getOverriddenSensorInformation"
+	CommandSetSensorOverrideEnabled                 = "Emulation.setSensorOverrideEnabled"
+	CommandSetSensorOverrideReadings                = "Emulation.setSensorOverrideReadings"
+	CommandSetPressureSourceOverrideEnabled         = "Emulation.setPressureSourceOverrideEnabled"
+	CommandSetPressureStateOverride                 = "Emulation.setPressureStateOverride"
+	CommandSetPressureDataOverride                  = "Emulation.setPressureDataOverride"
+	CommandSetIdleOverride                          = "Emulation.setIdleOverride"
+	CommandClearIdleOverride                        = "Emulation.clearIdleOverride"
+	CommandSetPageScaleFactor                       = "Emulation.setPageScaleFactor"
+	CommandSetScriptExecutionDisabled               = "Emulation.setScriptExecutionDisabled"
+	CommandSetTouchEmulationEnabled                 = "Emulation.setTouchEmulationEnabled"
+	CommandSetVirtualTimePolicy                     = "Emulation.setVirtualTimePolicy"
+	CommandSetLocaleOverride                        = "Emulation.setLocaleOverride"
+	CommandSetTimezoneOverride                      = "Emulation.setTimezoneOverride"
+	CommandSetDisabledImageTypes                    = "Emulation.setDisabledImageTypes"
+	CommandSetDataSaverOverride                     = "Emulation.setDataSaverOverride"
+	CommandSetHardwareConcurrencyOverride           = "Emulation.setHardwareConcurrencyOverride"
+	CommandSetUserAgentOverride                     = "Emulation.setUserAgentOverride"
+	CommandSetAutomationOverride                    = "Emulation.setAutomationOverride"
+	CommandSetSmallViewportHeightDifferenceOverride = "Emulation.setSmallViewportHeightDifferenceOverride"
+	CommandGetScreenInfos                           = "Emulation.getScreenInfos"
+	CommandAddScreen                                = "Emulation.addScreen"
+	CommandUpdateScreen                             = "Emulation.updateScreen"
+	CommandRemoveScreen                             = "Emulation.removeScreen"
+	CommandSetPrimaryScreen                         = "Emulation.setPrimaryScreen"
 )

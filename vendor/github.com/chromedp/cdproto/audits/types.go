@@ -53,8 +53,6 @@ const (
 	CookieExclusionReasonExcludeSameSiteNoneInsecure                   CookieExclusionReason = "ExcludeSameSiteNoneInsecure"
 	CookieExclusionReasonExcludeSameSiteLax                            CookieExclusionReason = "ExcludeSameSiteLax"
 	CookieExclusionReasonExcludeSameSiteStrict                         CookieExclusionReason = "ExcludeSameSiteStrict"
-	CookieExclusionReasonExcludeInvalidSameParty                       CookieExclusionReason = "ExcludeInvalidSameParty"
-	CookieExclusionReasonExcludeSamePartyCrossPartyContext             CookieExclusionReason = "ExcludeSamePartyCrossPartyContext"
 	CookieExclusionReasonExcludeDomainNonASCII                         CookieExclusionReason = "ExcludeDomainNonASCII"
 	CookieExclusionReasonExcludeThirdPartyCookieBlockedInFirstPartySet CookieExclusionReason = "ExcludeThirdPartyCookieBlockedInFirstPartySet"
 	CookieExclusionReasonExcludeThirdPartyPhaseout                     CookieExclusionReason = "ExcludeThirdPartyPhaseout"
@@ -76,10 +74,6 @@ func (t *CookieExclusionReason) UnmarshalJSON(buf []byte) error {
 		*t = CookieExclusionReasonExcludeSameSiteLax
 	case CookieExclusionReasonExcludeSameSiteStrict:
 		*t = CookieExclusionReasonExcludeSameSiteStrict
-	case CookieExclusionReasonExcludeInvalidSameParty:
-		*t = CookieExclusionReasonExcludeInvalidSameParty
-	case CookieExclusionReasonExcludeSamePartyCrossPartyContext:
-		*t = CookieExclusionReasonExcludeSamePartyCrossPartyContext
 	case CookieExclusionReasonExcludeDomainNonASCII:
 		*t = CookieExclusionReasonExcludeDomainNonASCII
 	case CookieExclusionReasonExcludeThirdPartyCookieBlockedInFirstPartySet:
@@ -256,6 +250,43 @@ type CookieIssueDetails struct {
 	CookieURL              string                  `json:"cookieUrl,omitempty,omitzero"`
 	Request                *AffectedRequest        `json:"request,omitempty,omitzero"`
 	Insight                *CookieIssueInsight     `json:"insight,omitempty,omitzero"` // The recommended solution to the issue.
+}
+
+// PerformanceIssueType [no description].
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Audits#type-PerformanceIssueType
+type PerformanceIssueType string
+
+// String returns the PerformanceIssueType as string value.
+func (t PerformanceIssueType) String() string {
+	return string(t)
+}
+
+// PerformanceIssueType values.
+const (
+	PerformanceIssueTypeDocumentCookie PerformanceIssueType = "DocumentCookie"
+)
+
+// UnmarshalJSON satisfies [json.Unmarshaler].
+func (t *PerformanceIssueType) UnmarshalJSON(buf []byte) error {
+	s := string(buf)
+	s = strings.TrimSuffix(strings.TrimPrefix(s, `"`), `"`)
+
+	switch PerformanceIssueType(s) {
+	case PerformanceIssueTypeDocumentCookie:
+		*t = PerformanceIssueTypeDocumentCookie
+	default:
+		return fmt.Errorf("unknown PerformanceIssueType value: %v", s)
+	}
+	return nil
+}
+
+// PerformanceIssueDetails details for a performance issue.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Audits#type-PerformanceIssueDetails
+type PerformanceIssueDetails struct {
+	PerformanceIssueType PerformanceIssueType `json:"performanceIssueType"`
+	SourceCodeLocation   *SourceCodeLocation  `json:"sourceCodeLocation,omitempty,omitzero"`
 }
 
 // MixedContentResolutionStatus [no description].
@@ -608,10 +639,10 @@ func (t *ContentSecurityPolicyViolationType) UnmarshalJSON(buf []byte) error {
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/Audits#type-SourceCodeLocation
 type SourceCodeLocation struct {
-	ScriptID     runtime.ScriptID `json:"scriptId,omitempty,omitzero"`
-	URL          string           `json:"url"`
-	LineNumber   int64            `json:"lineNumber"`
-	ColumnNumber int64            `json:"columnNumber"`
+	ScriptID     cdp.ScriptID `json:"scriptId,omitempty,omitzero"`
+	URL          string       `json:"url"`
+	LineNumber   int64        `json:"lineNumber"`
+	ColumnNumber int64        `json:"columnNumber"`
 }
 
 // ContentSecurityPolicyIssueDetails [no description].
@@ -668,19 +699,6 @@ type SharedArrayBufferIssueDetails struct {
 	SourceCodeLocation *SourceCodeLocation        `json:"sourceCodeLocation"`
 	IsWarning          bool                       `json:"isWarning"`
 	Type               SharedArrayBufferIssueType `json:"type"`
-}
-
-// LowTextContrastIssueDetails [no description].
-//
-// See: https://chromedevtools.github.io/devtools-protocol/tot/Audits#type-LowTextContrastIssueDetails
-type LowTextContrastIssueDetails struct {
-	ViolatingNodeID       cdp.BackendNodeID `json:"violatingNodeId"`
-	ViolatingNodeSelector string            `json:"violatingNodeSelector"`
-	ContrastRatio         float64           `json:"contrastRatio"`
-	ThresholdAA           float64           `json:"thresholdAA"`
-	ThresholdAAA          float64           `json:"thresholdAAA"`
-	FontSize              string            `json:"fontSize"`
-	FontWeight            string            `json:"fontWeight"`
 }
 
 // CorsIssueDetails details for a CORS related issue, e.g. a warning or error
@@ -809,8 +827,10 @@ const (
 	SharedDictionaryErrorWriteErrorInsufficientResources           SharedDictionaryError = "WriteErrorInsufficientResources"
 	SharedDictionaryErrorWriteErrorInvalidMatchField               SharedDictionaryError = "WriteErrorInvalidMatchField"
 	SharedDictionaryErrorWriteErrorInvalidStructuredHeader         SharedDictionaryError = "WriteErrorInvalidStructuredHeader"
+	SharedDictionaryErrorWriteErrorInvalidTTLField                 SharedDictionaryError = "WriteErrorInvalidTTLField"
 	SharedDictionaryErrorWriteErrorNavigationRequest               SharedDictionaryError = "WriteErrorNavigationRequest"
 	SharedDictionaryErrorWriteErrorNoMatchField                    SharedDictionaryError = "WriteErrorNoMatchField"
+	SharedDictionaryErrorWriteErrorNonIntegerTTLField              SharedDictionaryError = "WriteErrorNonIntegerTTLField"
 	SharedDictionaryErrorWriteErrorNonListMatchDestField           SharedDictionaryError = "WriteErrorNonListMatchDestField"
 	SharedDictionaryErrorWriteErrorNonSecureContext                SharedDictionaryError = "WriteErrorNonSecureContext"
 	SharedDictionaryErrorWriteErrorNonStringIDField                SharedDictionaryError = "WriteErrorNonStringIdField"
@@ -851,10 +871,14 @@ func (t *SharedDictionaryError) UnmarshalJSON(buf []byte) error {
 		*t = SharedDictionaryErrorWriteErrorInvalidMatchField
 	case SharedDictionaryErrorWriteErrorInvalidStructuredHeader:
 		*t = SharedDictionaryErrorWriteErrorInvalidStructuredHeader
+	case SharedDictionaryErrorWriteErrorInvalidTTLField:
+		*t = SharedDictionaryErrorWriteErrorInvalidTTLField
 	case SharedDictionaryErrorWriteErrorNavigationRequest:
 		*t = SharedDictionaryErrorWriteErrorNavigationRequest
 	case SharedDictionaryErrorWriteErrorNoMatchField:
 		*t = SharedDictionaryErrorWriteErrorNoMatchField
+	case SharedDictionaryErrorWriteErrorNonIntegerTTLField:
+		*t = SharedDictionaryErrorWriteErrorNonIntegerTTLField
 	case SharedDictionaryErrorWriteErrorNonListMatchDestField:
 		*t = SharedDictionaryErrorWriteErrorNonListMatchDestField
 	case SharedDictionaryErrorWriteErrorNonSecureContext:
@@ -913,6 +937,7 @@ const (
 	SRIMessageSignatureErrorValidationFailedSignatureExpired                     SRIMessageSignatureError = "ValidationFailedSignatureExpired"
 	SRIMessageSignatureErrorValidationFailedInvalidLength                        SRIMessageSignatureError = "ValidationFailedInvalidLength"
 	SRIMessageSignatureErrorValidationFailedSignatureMismatch                    SRIMessageSignatureError = "ValidationFailedSignatureMismatch"
+	SRIMessageSignatureErrorValidationFailedIntegrityMismatch                    SRIMessageSignatureError = "ValidationFailedIntegrityMismatch"
 )
 
 // UnmarshalJSON satisfies [json.Unmarshaler].
@@ -961,8 +986,92 @@ func (t *SRIMessageSignatureError) UnmarshalJSON(buf []byte) error {
 		*t = SRIMessageSignatureErrorValidationFailedInvalidLength
 	case SRIMessageSignatureErrorValidationFailedSignatureMismatch:
 		*t = SRIMessageSignatureErrorValidationFailedSignatureMismatch
+	case SRIMessageSignatureErrorValidationFailedIntegrityMismatch:
+		*t = SRIMessageSignatureErrorValidationFailedIntegrityMismatch
 	default:
 		return fmt.Errorf("unknown SRIMessageSignatureError value: %v", s)
+	}
+	return nil
+}
+
+// UnencodedDigestError [no description].
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Audits#type-UnencodedDigestError
+type UnencodedDigestError string
+
+// String returns the UnencodedDigestError as string value.
+func (t UnencodedDigestError) String() string {
+	return string(t)
+}
+
+// UnencodedDigestError values.
+const (
+	UnencodedDigestErrorMalformedDictionary   UnencodedDigestError = "MalformedDictionary"
+	UnencodedDigestErrorUnknownAlgorithm      UnencodedDigestError = "UnknownAlgorithm"
+	UnencodedDigestErrorIncorrectDigestType   UnencodedDigestError = "IncorrectDigestType"
+	UnencodedDigestErrorIncorrectDigestLength UnencodedDigestError = "IncorrectDigestLength"
+)
+
+// UnmarshalJSON satisfies [json.Unmarshaler].
+func (t *UnencodedDigestError) UnmarshalJSON(buf []byte) error {
+	s := string(buf)
+	s = strings.TrimSuffix(strings.TrimPrefix(s, `"`), `"`)
+
+	switch UnencodedDigestError(s) {
+	case UnencodedDigestErrorMalformedDictionary:
+		*t = UnencodedDigestErrorMalformedDictionary
+	case UnencodedDigestErrorUnknownAlgorithm:
+		*t = UnencodedDigestErrorUnknownAlgorithm
+	case UnencodedDigestErrorIncorrectDigestType:
+		*t = UnencodedDigestErrorIncorrectDigestType
+	case UnencodedDigestErrorIncorrectDigestLength:
+		*t = UnencodedDigestErrorIncorrectDigestLength
+	default:
+		return fmt.Errorf("unknown UnencodedDigestError value: %v", s)
+	}
+	return nil
+}
+
+// ConnectionAllowlistError [no description].
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Audits#type-ConnectionAllowlistError
+type ConnectionAllowlistError string
+
+// String returns the ConnectionAllowlistError as string value.
+func (t ConnectionAllowlistError) String() string {
+	return string(t)
+}
+
+// ConnectionAllowlistError values.
+const (
+	ConnectionAllowlistErrorInvalidHeader             ConnectionAllowlistError = "InvalidHeader"
+	ConnectionAllowlistErrorMoreThanOneList           ConnectionAllowlistError = "MoreThanOneList"
+	ConnectionAllowlistErrorItemNotInnerList          ConnectionAllowlistError = "ItemNotInnerList"
+	ConnectionAllowlistErrorInvalidAllowlistItemType  ConnectionAllowlistError = "InvalidAllowlistItemType"
+	ConnectionAllowlistErrorReportingEndpointNotToken ConnectionAllowlistError = "ReportingEndpointNotToken"
+	ConnectionAllowlistErrorInvalidURLPattern         ConnectionAllowlistError = "InvalidUrlPattern"
+)
+
+// UnmarshalJSON satisfies [json.Unmarshaler].
+func (t *ConnectionAllowlistError) UnmarshalJSON(buf []byte) error {
+	s := string(buf)
+	s = strings.TrimSuffix(strings.TrimPrefix(s, `"`), `"`)
+
+	switch ConnectionAllowlistError(s) {
+	case ConnectionAllowlistErrorInvalidHeader:
+		*t = ConnectionAllowlistErrorInvalidHeader
+	case ConnectionAllowlistErrorMoreThanOneList:
+		*t = ConnectionAllowlistErrorMoreThanOneList
+	case ConnectionAllowlistErrorItemNotInnerList:
+		*t = ConnectionAllowlistErrorItemNotInnerList
+	case ConnectionAllowlistErrorInvalidAllowlistItemType:
+		*t = ConnectionAllowlistErrorInvalidAllowlistItemType
+	case ConnectionAllowlistErrorReportingEndpointNotToken:
+		*t = ConnectionAllowlistErrorReportingEndpointNotToken
+	case ConnectionAllowlistErrorInvalidURLPattern:
+		*t = ConnectionAllowlistErrorInvalidURLPattern
+	default:
+		return fmt.Errorf("unknown ConnectionAllowlistError value: %v", s)
 	}
 	return nil
 }
@@ -1003,7 +1112,25 @@ type SharedDictionaryIssueDetails struct {
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/Audits#type-SRIMessageSignatureIssueDetails
 type SRIMessageSignatureIssueDetails struct {
-	Error   SRIMessageSignatureError `json:"error"`
+	Error               SRIMessageSignatureError `json:"error"`
+	SignatureBase       string                   `json:"signatureBase"`
+	IntegrityAssertions []string                 `json:"integrityAssertions"`
+	Request             *AffectedRequest         `json:"request"`
+}
+
+// UnencodedDigestIssueDetails [no description].
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Audits#type-UnencodedDigestIssueDetails
+type UnencodedDigestIssueDetails struct {
+	Error   UnencodedDigestError `json:"error"`
+	Request *AffectedRequest     `json:"request"`
+}
+
+// ConnectionAllowlistIssueDetails [no description].
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Audits#type-ConnectionAllowlistIssueDetails
+type ConnectionAllowlistIssueDetails struct {
+	Error   ConnectionAllowlistError `json:"error"`
 	Request *AffectedRequest         `json:"request"`
 }
 
@@ -1024,12 +1151,17 @@ const (
 	GenericIssueErrorTypeFormInputWithNoLabelError                                  GenericIssueErrorType = "FormInputWithNoLabelError"
 	GenericIssueErrorTypeFormAutocompleteAttributeEmptyError                        GenericIssueErrorType = "FormAutocompleteAttributeEmptyError"
 	GenericIssueErrorTypeFormEmptyIDAndNameAttributesForInputError                  GenericIssueErrorType = "FormEmptyIdAndNameAttributesForInputError"
-	GenericIssueErrorTypeFormAriaLabelledByToNonExistingID                          GenericIssueErrorType = "FormAriaLabelledByToNonExistingId"
+	GenericIssueErrorTypeFormAriaLabelledByToNonExistingIDError                     GenericIssueErrorType = "FormAriaLabelledByToNonExistingIdError"
 	GenericIssueErrorTypeFormInputAssignedAutocompleteValueToIDOrNameAttributeError GenericIssueErrorType = "FormInputAssignedAutocompleteValueToIdOrNameAttributeError"
-	GenericIssueErrorTypeFormLabelHasNeitherForNorNestedInput                       GenericIssueErrorType = "FormLabelHasNeitherForNorNestedInput"
+	GenericIssueErrorTypeFormLabelHasNeitherForNorNestedInputError                  GenericIssueErrorType = "FormLabelHasNeitherForNorNestedInputError"
 	GenericIssueErrorTypeFormLabelForMatchesNonExistingIDError                      GenericIssueErrorType = "FormLabelForMatchesNonExistingIdError"
 	GenericIssueErrorTypeFormInputHasWrongButWellIntendedAutocompleteValueError     GenericIssueErrorType = "FormInputHasWrongButWellIntendedAutocompleteValueError"
 	GenericIssueErrorTypeResponseWasBlockedByORB                                    GenericIssueErrorType = "ResponseWasBlockedByORB"
+	GenericIssueErrorTypeNavigationEntryMarkedSkippable                             GenericIssueErrorType = "NavigationEntryMarkedSkippable"
+	GenericIssueErrorTypeAutofillAndManualTextPolicyControlledFeaturesInfo          GenericIssueErrorType = "AutofillAndManualTextPolicyControlledFeaturesInfo"
+	GenericIssueErrorTypeAutofillPolicyControlledFeatureInfo                        GenericIssueErrorType = "AutofillPolicyControlledFeatureInfo"
+	GenericIssueErrorTypeManualTextPolicyControlledFeatureInfo                      GenericIssueErrorType = "ManualTextPolicyControlledFeatureInfo"
+	GenericIssueErrorTypeFormModelContextParameterMissingTitleAndDescription        GenericIssueErrorType = "FormModelContextParameterMissingTitleAndDescription"
 )
 
 // UnmarshalJSON satisfies [json.Unmarshaler].
@@ -1048,18 +1180,28 @@ func (t *GenericIssueErrorType) UnmarshalJSON(buf []byte) error {
 		*t = GenericIssueErrorTypeFormAutocompleteAttributeEmptyError
 	case GenericIssueErrorTypeFormEmptyIDAndNameAttributesForInputError:
 		*t = GenericIssueErrorTypeFormEmptyIDAndNameAttributesForInputError
-	case GenericIssueErrorTypeFormAriaLabelledByToNonExistingID:
-		*t = GenericIssueErrorTypeFormAriaLabelledByToNonExistingID
+	case GenericIssueErrorTypeFormAriaLabelledByToNonExistingIDError:
+		*t = GenericIssueErrorTypeFormAriaLabelledByToNonExistingIDError
 	case GenericIssueErrorTypeFormInputAssignedAutocompleteValueToIDOrNameAttributeError:
 		*t = GenericIssueErrorTypeFormInputAssignedAutocompleteValueToIDOrNameAttributeError
-	case GenericIssueErrorTypeFormLabelHasNeitherForNorNestedInput:
-		*t = GenericIssueErrorTypeFormLabelHasNeitherForNorNestedInput
+	case GenericIssueErrorTypeFormLabelHasNeitherForNorNestedInputError:
+		*t = GenericIssueErrorTypeFormLabelHasNeitherForNorNestedInputError
 	case GenericIssueErrorTypeFormLabelForMatchesNonExistingIDError:
 		*t = GenericIssueErrorTypeFormLabelForMatchesNonExistingIDError
 	case GenericIssueErrorTypeFormInputHasWrongButWellIntendedAutocompleteValueError:
 		*t = GenericIssueErrorTypeFormInputHasWrongButWellIntendedAutocompleteValueError
 	case GenericIssueErrorTypeResponseWasBlockedByORB:
 		*t = GenericIssueErrorTypeResponseWasBlockedByORB
+	case GenericIssueErrorTypeNavigationEntryMarkedSkippable:
+		*t = GenericIssueErrorTypeNavigationEntryMarkedSkippable
+	case GenericIssueErrorTypeAutofillAndManualTextPolicyControlledFeaturesInfo:
+		*t = GenericIssueErrorTypeAutofillAndManualTextPolicyControlledFeaturesInfo
+	case GenericIssueErrorTypeAutofillPolicyControlledFeatureInfo:
+		*t = GenericIssueErrorTypeAutofillPolicyControlledFeatureInfo
+	case GenericIssueErrorTypeManualTextPolicyControlledFeatureInfo:
+		*t = GenericIssueErrorTypeManualTextPolicyControlledFeatureInfo
+	case GenericIssueErrorTypeFormModelContextParameterMissingTitleAndDescription:
+		*t = GenericIssueErrorTypeFormModelContextParameterMissingTitleAndDescription
 	default:
 		return fmt.Errorf("unknown GenericIssueErrorType value: %v", s)
 	}
@@ -1183,10 +1325,6 @@ const (
 	FederatedAuthRequestIssueReasonConfigNoResponse                 FederatedAuthRequestIssueReason = "ConfigNoResponse"
 	FederatedAuthRequestIssueReasonConfigInvalidResponse            FederatedAuthRequestIssueReason = "ConfigInvalidResponse"
 	FederatedAuthRequestIssueReasonConfigInvalidContentType         FederatedAuthRequestIssueReason = "ConfigInvalidContentType"
-	FederatedAuthRequestIssueReasonClientMetadataHTTPNotFound       FederatedAuthRequestIssueReason = "ClientMetadataHttpNotFound"
-	FederatedAuthRequestIssueReasonClientMetadataNoResponse         FederatedAuthRequestIssueReason = "ClientMetadataNoResponse"
-	FederatedAuthRequestIssueReasonClientMetadataInvalidResponse    FederatedAuthRequestIssueReason = "ClientMetadataInvalidResponse"
-	FederatedAuthRequestIssueReasonClientMetadataInvalidContentType FederatedAuthRequestIssueReason = "ClientMetadataInvalidContentType"
 	FederatedAuthRequestIssueReasonIdpNotPotentiallyTrustworthy     FederatedAuthRequestIssueReason = "IdpNotPotentiallyTrustworthy"
 	FederatedAuthRequestIssueReasonDisabledInSettings               FederatedAuthRequestIssueReason = "DisabledInSettings"
 	FederatedAuthRequestIssueReasonDisabledInFlags                  FederatedAuthRequestIssueReason = "DisabledInFlags"
@@ -1208,15 +1346,14 @@ const (
 	FederatedAuthRequestIssueReasonCanceled                         FederatedAuthRequestIssueReason = "Canceled"
 	FederatedAuthRequestIssueReasonRpPageNotVisible                 FederatedAuthRequestIssueReason = "RpPageNotVisible"
 	FederatedAuthRequestIssueReasonSilentMediationFailure           FederatedAuthRequestIssueReason = "SilentMediationFailure"
-	FederatedAuthRequestIssueReasonThirdPartyCookiesBlocked         FederatedAuthRequestIssueReason = "ThirdPartyCookiesBlocked"
 	FederatedAuthRequestIssueReasonNotSignedInWithIdp               FederatedAuthRequestIssueReason = "NotSignedInWithIdp"
 	FederatedAuthRequestIssueReasonMissingTransientUserActivation   FederatedAuthRequestIssueReason = "MissingTransientUserActivation"
 	FederatedAuthRequestIssueReasonReplacedByActiveMode             FederatedAuthRequestIssueReason = "ReplacedByActiveMode"
-	FederatedAuthRequestIssueReasonInvalidFieldsSpecified           FederatedAuthRequestIssueReason = "InvalidFieldsSpecified"
 	FederatedAuthRequestIssueReasonRelyingPartyOriginIsOpaque       FederatedAuthRequestIssueReason = "RelyingPartyOriginIsOpaque"
 	FederatedAuthRequestIssueReasonTypeNotMatching                  FederatedAuthRequestIssueReason = "TypeNotMatching"
 	FederatedAuthRequestIssueReasonUIDismissedNoEmbargo             FederatedAuthRequestIssueReason = "UiDismissedNoEmbargo"
 	FederatedAuthRequestIssueReasonCorsError                        FederatedAuthRequestIssueReason = "CorsError"
+	FederatedAuthRequestIssueReasonSuppressedBySegmentationPlatform FederatedAuthRequestIssueReason = "SuppressedBySegmentationPlatform"
 )
 
 // UnmarshalJSON satisfies [json.Unmarshaler].
@@ -1251,14 +1388,6 @@ func (t *FederatedAuthRequestIssueReason) UnmarshalJSON(buf []byte) error {
 		*t = FederatedAuthRequestIssueReasonConfigInvalidResponse
 	case FederatedAuthRequestIssueReasonConfigInvalidContentType:
 		*t = FederatedAuthRequestIssueReasonConfigInvalidContentType
-	case FederatedAuthRequestIssueReasonClientMetadataHTTPNotFound:
-		*t = FederatedAuthRequestIssueReasonClientMetadataHTTPNotFound
-	case FederatedAuthRequestIssueReasonClientMetadataNoResponse:
-		*t = FederatedAuthRequestIssueReasonClientMetadataNoResponse
-	case FederatedAuthRequestIssueReasonClientMetadataInvalidResponse:
-		*t = FederatedAuthRequestIssueReasonClientMetadataInvalidResponse
-	case FederatedAuthRequestIssueReasonClientMetadataInvalidContentType:
-		*t = FederatedAuthRequestIssueReasonClientMetadataInvalidContentType
 	case FederatedAuthRequestIssueReasonIdpNotPotentiallyTrustworthy:
 		*t = FederatedAuthRequestIssueReasonIdpNotPotentiallyTrustworthy
 	case FederatedAuthRequestIssueReasonDisabledInSettings:
@@ -1301,16 +1430,12 @@ func (t *FederatedAuthRequestIssueReason) UnmarshalJSON(buf []byte) error {
 		*t = FederatedAuthRequestIssueReasonRpPageNotVisible
 	case FederatedAuthRequestIssueReasonSilentMediationFailure:
 		*t = FederatedAuthRequestIssueReasonSilentMediationFailure
-	case FederatedAuthRequestIssueReasonThirdPartyCookiesBlocked:
-		*t = FederatedAuthRequestIssueReasonThirdPartyCookiesBlocked
 	case FederatedAuthRequestIssueReasonNotSignedInWithIdp:
 		*t = FederatedAuthRequestIssueReasonNotSignedInWithIdp
 	case FederatedAuthRequestIssueReasonMissingTransientUserActivation:
 		*t = FederatedAuthRequestIssueReasonMissingTransientUserActivation
 	case FederatedAuthRequestIssueReasonReplacedByActiveMode:
 		*t = FederatedAuthRequestIssueReasonReplacedByActiveMode
-	case FederatedAuthRequestIssueReasonInvalidFieldsSpecified:
-		*t = FederatedAuthRequestIssueReasonInvalidFieldsSpecified
 	case FederatedAuthRequestIssueReasonRelyingPartyOriginIsOpaque:
 		*t = FederatedAuthRequestIssueReasonRelyingPartyOriginIsOpaque
 	case FederatedAuthRequestIssueReasonTypeNotMatching:
@@ -1319,6 +1444,8 @@ func (t *FederatedAuthRequestIssueReason) UnmarshalJSON(buf []byte) error {
 		*t = FederatedAuthRequestIssueReasonUIDismissedNoEmbargo
 	case FederatedAuthRequestIssueReasonCorsError:
 		*t = FederatedAuthRequestIssueReasonCorsError
+	case FederatedAuthRequestIssueReasonSuppressedBySegmentationPlatform:
+		*t = FederatedAuthRequestIssueReasonSuppressedBySegmentationPlatform
 	default:
 		return fmt.Errorf("unknown FederatedAuthRequestIssueReason value: %v", s)
 	}
@@ -1447,55 +1574,58 @@ type PartitioningBlobURLIssueDetails struct {
 	PartitioningBlobURLInfo PartitioningBlobURLInfo `json:"partitioningBlobURLInfo"` // Additional information about the Partitioning Blob URL issue.
 }
 
-// SelectElementAccessibilityIssueReason [no description].
+// ElementAccessibilityIssueReason [no description].
 //
-// See: https://chromedevtools.github.io/devtools-protocol/tot/Audits#type-SelectElementAccessibilityIssueReason
-type SelectElementAccessibilityIssueReason string
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Audits#type-ElementAccessibilityIssueReason
+type ElementAccessibilityIssueReason string
 
-// String returns the SelectElementAccessibilityIssueReason as string value.
-func (t SelectElementAccessibilityIssueReason) String() string {
+// String returns the ElementAccessibilityIssueReason as string value.
+func (t ElementAccessibilityIssueReason) String() string {
 	return string(t)
 }
 
-// SelectElementAccessibilityIssueReason values.
+// ElementAccessibilityIssueReason values.
 const (
-	SelectElementAccessibilityIssueReasonDisallowedSelectChild         SelectElementAccessibilityIssueReason = "DisallowedSelectChild"
-	SelectElementAccessibilityIssueReasonDisallowedOptGroupChild       SelectElementAccessibilityIssueReason = "DisallowedOptGroupChild"
-	SelectElementAccessibilityIssueReasonNonPhrasingContentOptionChild SelectElementAccessibilityIssueReason = "NonPhrasingContentOptionChild"
-	SelectElementAccessibilityIssueReasonInteractiveContentOptionChild SelectElementAccessibilityIssueReason = "InteractiveContentOptionChild"
-	SelectElementAccessibilityIssueReasonInteractiveContentLegendChild SelectElementAccessibilityIssueReason = "InteractiveContentLegendChild"
+	ElementAccessibilityIssueReasonDisallowedSelectChild               ElementAccessibilityIssueReason = "DisallowedSelectChild"
+	ElementAccessibilityIssueReasonDisallowedOptGroupChild             ElementAccessibilityIssueReason = "DisallowedOptGroupChild"
+	ElementAccessibilityIssueReasonNonPhrasingContentOptionChild       ElementAccessibilityIssueReason = "NonPhrasingContentOptionChild"
+	ElementAccessibilityIssueReasonInteractiveContentOptionChild       ElementAccessibilityIssueReason = "InteractiveContentOptionChild"
+	ElementAccessibilityIssueReasonInteractiveContentLegendChild       ElementAccessibilityIssueReason = "InteractiveContentLegendChild"
+	ElementAccessibilityIssueReasonInteractiveContentSummaryDescendant ElementAccessibilityIssueReason = "InteractiveContentSummaryDescendant"
 )
 
 // UnmarshalJSON satisfies [json.Unmarshaler].
-func (t *SelectElementAccessibilityIssueReason) UnmarshalJSON(buf []byte) error {
+func (t *ElementAccessibilityIssueReason) UnmarshalJSON(buf []byte) error {
 	s := string(buf)
 	s = strings.TrimSuffix(strings.TrimPrefix(s, `"`), `"`)
 
-	switch SelectElementAccessibilityIssueReason(s) {
-	case SelectElementAccessibilityIssueReasonDisallowedSelectChild:
-		*t = SelectElementAccessibilityIssueReasonDisallowedSelectChild
-	case SelectElementAccessibilityIssueReasonDisallowedOptGroupChild:
-		*t = SelectElementAccessibilityIssueReasonDisallowedOptGroupChild
-	case SelectElementAccessibilityIssueReasonNonPhrasingContentOptionChild:
-		*t = SelectElementAccessibilityIssueReasonNonPhrasingContentOptionChild
-	case SelectElementAccessibilityIssueReasonInteractiveContentOptionChild:
-		*t = SelectElementAccessibilityIssueReasonInteractiveContentOptionChild
-	case SelectElementAccessibilityIssueReasonInteractiveContentLegendChild:
-		*t = SelectElementAccessibilityIssueReasonInteractiveContentLegendChild
+	switch ElementAccessibilityIssueReason(s) {
+	case ElementAccessibilityIssueReasonDisallowedSelectChild:
+		*t = ElementAccessibilityIssueReasonDisallowedSelectChild
+	case ElementAccessibilityIssueReasonDisallowedOptGroupChild:
+		*t = ElementAccessibilityIssueReasonDisallowedOptGroupChild
+	case ElementAccessibilityIssueReasonNonPhrasingContentOptionChild:
+		*t = ElementAccessibilityIssueReasonNonPhrasingContentOptionChild
+	case ElementAccessibilityIssueReasonInteractiveContentOptionChild:
+		*t = ElementAccessibilityIssueReasonInteractiveContentOptionChild
+	case ElementAccessibilityIssueReasonInteractiveContentLegendChild:
+		*t = ElementAccessibilityIssueReasonInteractiveContentLegendChild
+	case ElementAccessibilityIssueReasonInteractiveContentSummaryDescendant:
+		*t = ElementAccessibilityIssueReasonInteractiveContentSummaryDescendant
 	default:
-		return fmt.Errorf("unknown SelectElementAccessibilityIssueReason value: %v", s)
+		return fmt.Errorf("unknown ElementAccessibilityIssueReason value: %v", s)
 	}
 	return nil
 }
 
-// SelectElementAccessibilityIssueDetails this issue warns about errors in
-// the select element content model.
+// ElementAccessibilityIssueDetails this issue warns about errors in the
+// select or summary element content model.
 //
-// See: https://chromedevtools.github.io/devtools-protocol/tot/Audits#type-SelectElementAccessibilityIssueDetails
-type SelectElementAccessibilityIssueDetails struct {
-	NodeID                                cdp.BackendNodeID                     `json:"nodeId"`
-	SelectElementAccessibilityIssueReason SelectElementAccessibilityIssueReason `json:"selectElementAccessibilityIssueReason"`
-	HasDisallowedAttributes               bool                                  `json:"hasDisallowedAttributes"`
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Audits#type-ElementAccessibilityIssueDetails
+type ElementAccessibilityIssueDetails struct {
+	NodeID                          cdp.BackendNodeID               `json:"nodeId"`
+	ElementAccessibilityIssueReason ElementAccessibilityIssueReason `json:"elementAccessibilityIssueReason"`
+	HasDisallowedAttributes         bool                            `json:"hasDisallowedAttributes"`
 }
 
 // StyleSheetLoadingIssueReason [no description].
@@ -1588,6 +1718,165 @@ type PropertyRuleIssueDetails struct {
 	PropertyValue           string                  `json:"propertyValue,omitempty,omitzero"` // The value of the property rule property that failed to parse
 }
 
+// UserReidentificationIssueType [no description].
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Audits#type-UserReidentificationIssueType
+type UserReidentificationIssueType string
+
+// String returns the UserReidentificationIssueType as string value.
+func (t UserReidentificationIssueType) String() string {
+	return string(t)
+}
+
+// UserReidentificationIssueType values.
+const (
+	UserReidentificationIssueTypeBlockedFrameNavigation UserReidentificationIssueType = "BlockedFrameNavigation"
+	UserReidentificationIssueTypeBlockedSubresource     UserReidentificationIssueType = "BlockedSubresource"
+	UserReidentificationIssueTypeNoisedCanvasReadback   UserReidentificationIssueType = "NoisedCanvasReadback"
+)
+
+// UnmarshalJSON satisfies [json.Unmarshaler].
+func (t *UserReidentificationIssueType) UnmarshalJSON(buf []byte) error {
+	s := string(buf)
+	s = strings.TrimSuffix(strings.TrimPrefix(s, `"`), `"`)
+
+	switch UserReidentificationIssueType(s) {
+	case UserReidentificationIssueTypeBlockedFrameNavigation:
+		*t = UserReidentificationIssueTypeBlockedFrameNavigation
+	case UserReidentificationIssueTypeBlockedSubresource:
+		*t = UserReidentificationIssueTypeBlockedSubresource
+	case UserReidentificationIssueTypeNoisedCanvasReadback:
+		*t = UserReidentificationIssueTypeNoisedCanvasReadback
+	default:
+		return fmt.Errorf("unknown UserReidentificationIssueType value: %v", s)
+	}
+	return nil
+}
+
+// UserReidentificationIssueDetails this issue warns about uses of APIs that
+// may be considered misuse to re-identify users.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Audits#type-UserReidentificationIssueDetails
+type UserReidentificationIssueDetails struct {
+	Type               UserReidentificationIssueType `json:"type"`
+	Request            *AffectedRequest              `json:"request,omitempty,omitzero"`            // Applies to BlockedFrameNavigation and BlockedSubresource issue types.
+	SourceCodeLocation *SourceCodeLocation           `json:"sourceCodeLocation,omitempty,omitzero"` // Applies to NoisedCanvasReadback issue type.
+}
+
+// PermissionElementIssueType [no description].
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Audits#type-PermissionElementIssueType
+type PermissionElementIssueType string
+
+// String returns the PermissionElementIssueType as string value.
+func (t PermissionElementIssueType) String() string {
+	return string(t)
+}
+
+// PermissionElementIssueType values.
+const (
+	PermissionElementIssueTypeInvalidType               PermissionElementIssueType = "InvalidType"
+	PermissionElementIssueTypeFencedFrameDisallowed     PermissionElementIssueType = "FencedFrameDisallowed"
+	PermissionElementIssueTypeCspFrameAncestorsMissing  PermissionElementIssueType = "CspFrameAncestorsMissing"
+	PermissionElementIssueTypePermissionsPolicyBlocked  PermissionElementIssueType = "PermissionsPolicyBlocked"
+	PermissionElementIssueTypePaddingRightUnsupported   PermissionElementIssueType = "PaddingRightUnsupported"
+	PermissionElementIssueTypePaddingBottomUnsupported  PermissionElementIssueType = "PaddingBottomUnsupported"
+	PermissionElementIssueTypeInsetBoxShadowUnsupported PermissionElementIssueType = "InsetBoxShadowUnsupported"
+	PermissionElementIssueTypeRequestInProgress         PermissionElementIssueType = "RequestInProgress"
+	PermissionElementIssueTypeUntrustedEvent            PermissionElementIssueType = "UntrustedEvent"
+	PermissionElementIssueTypeRegistrationFailed        PermissionElementIssueType = "RegistrationFailed"
+	PermissionElementIssueTypeTypeNotSupported          PermissionElementIssueType = "TypeNotSupported"
+	PermissionElementIssueTypeInvalidTypeActivation     PermissionElementIssueType = "InvalidTypeActivation"
+	PermissionElementIssueTypeSecurityChecksFailed      PermissionElementIssueType = "SecurityChecksFailed"
+	PermissionElementIssueTypeActivationDisabled        PermissionElementIssueType = "ActivationDisabled"
+	PermissionElementIssueTypeGeolocationDeprecated     PermissionElementIssueType = "GeolocationDeprecated"
+	PermissionElementIssueTypeInvalidDisplayStyle       PermissionElementIssueType = "InvalidDisplayStyle"
+	PermissionElementIssueTypeNonOpaqueColor            PermissionElementIssueType = "NonOpaqueColor"
+	PermissionElementIssueTypeLowContrast               PermissionElementIssueType = "LowContrast"
+	PermissionElementIssueTypeFontSizeTooSmall          PermissionElementIssueType = "FontSizeTooSmall"
+	PermissionElementIssueTypeFontSizeTooLarge          PermissionElementIssueType = "FontSizeTooLarge"
+	PermissionElementIssueTypeInvalidSizeValue          PermissionElementIssueType = "InvalidSizeValue"
+)
+
+// UnmarshalJSON satisfies [json.Unmarshaler].
+func (t *PermissionElementIssueType) UnmarshalJSON(buf []byte) error {
+	s := string(buf)
+	s = strings.TrimSuffix(strings.TrimPrefix(s, `"`), `"`)
+
+	switch PermissionElementIssueType(s) {
+	case PermissionElementIssueTypeInvalidType:
+		*t = PermissionElementIssueTypeInvalidType
+	case PermissionElementIssueTypeFencedFrameDisallowed:
+		*t = PermissionElementIssueTypeFencedFrameDisallowed
+	case PermissionElementIssueTypeCspFrameAncestorsMissing:
+		*t = PermissionElementIssueTypeCspFrameAncestorsMissing
+	case PermissionElementIssueTypePermissionsPolicyBlocked:
+		*t = PermissionElementIssueTypePermissionsPolicyBlocked
+	case PermissionElementIssueTypePaddingRightUnsupported:
+		*t = PermissionElementIssueTypePaddingRightUnsupported
+	case PermissionElementIssueTypePaddingBottomUnsupported:
+		*t = PermissionElementIssueTypePaddingBottomUnsupported
+	case PermissionElementIssueTypeInsetBoxShadowUnsupported:
+		*t = PermissionElementIssueTypeInsetBoxShadowUnsupported
+	case PermissionElementIssueTypeRequestInProgress:
+		*t = PermissionElementIssueTypeRequestInProgress
+	case PermissionElementIssueTypeUntrustedEvent:
+		*t = PermissionElementIssueTypeUntrustedEvent
+	case PermissionElementIssueTypeRegistrationFailed:
+		*t = PermissionElementIssueTypeRegistrationFailed
+	case PermissionElementIssueTypeTypeNotSupported:
+		*t = PermissionElementIssueTypeTypeNotSupported
+	case PermissionElementIssueTypeInvalidTypeActivation:
+		*t = PermissionElementIssueTypeInvalidTypeActivation
+	case PermissionElementIssueTypeSecurityChecksFailed:
+		*t = PermissionElementIssueTypeSecurityChecksFailed
+	case PermissionElementIssueTypeActivationDisabled:
+		*t = PermissionElementIssueTypeActivationDisabled
+	case PermissionElementIssueTypeGeolocationDeprecated:
+		*t = PermissionElementIssueTypeGeolocationDeprecated
+	case PermissionElementIssueTypeInvalidDisplayStyle:
+		*t = PermissionElementIssueTypeInvalidDisplayStyle
+	case PermissionElementIssueTypeNonOpaqueColor:
+		*t = PermissionElementIssueTypeNonOpaqueColor
+	case PermissionElementIssueTypeLowContrast:
+		*t = PermissionElementIssueTypeLowContrast
+	case PermissionElementIssueTypeFontSizeTooSmall:
+		*t = PermissionElementIssueTypeFontSizeTooSmall
+	case PermissionElementIssueTypeFontSizeTooLarge:
+		*t = PermissionElementIssueTypeFontSizeTooLarge
+	case PermissionElementIssueTypeInvalidSizeValue:
+		*t = PermissionElementIssueTypeInvalidSizeValue
+	default:
+		return fmt.Errorf("unknown PermissionElementIssueType value: %v", s)
+	}
+	return nil
+}
+
+// PermissionElementIssueDetails this issue warns about improper usage of the
+// <permission> element.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Audits#type-PermissionElementIssueDetails
+type PermissionElementIssueDetails struct {
+	IssueType              PermissionElementIssueType `json:"issueType"`
+	Type                   string                     `json:"type,omitempty,omitzero"`                   // The value of the type attribute.
+	NodeID                 cdp.BackendNodeID          `json:"nodeId,omitempty,omitzero"`                 // The node ID of the <permission> element.
+	IsWarning              bool                       `json:"isWarning"`                                 // True if the issue is a warning, false if it is an error.
+	PermissionName         string                     `json:"permissionName,omitempty,omitzero"`         // Fields for message construction: Used for messages that reference a specific permission name
+	OccluderNodeInfo       string                     `json:"occluderNodeInfo,omitempty,omitzero"`       // Used for messages about occlusion
+	OccluderParentNodeInfo string                     `json:"occluderParentNodeInfo,omitempty,omitzero"` // Used for messages about occluder's parent
+	DisableReason          string                     `json:"disableReason,omitempty,omitzero"`          // Used for messages about activation disabled reason
+}
+
+// SelectivePermissionsInterventionIssueDetails the issue warns about blocked
+// calls to privacy sensitive APIs via the Selective Permissions Intervention.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Audits#type-SelectivePermissionsInterventionIssueDetails
+type SelectivePermissionsInterventionIssueDetails struct {
+	APIName    string              `json:"apiName"`                       // Which API was intervened on.
+	AdAncestry *cdp.AdAncestry     `json:"adAncestry"`                    // Why the ad script using the API is considered an ad.
+	StackTrace *runtime.StackTrace `json:"stackTrace,omitempty,omitzero"` // The stack trace at the time of the intervention.
+}
+
 // InspectorIssueCode a unique identifier for the type of issue. Each type
 // may use one of the optional fields in InspectorIssueDetails to convey more
 // specific information about the kind of issue.
@@ -1602,30 +1891,35 @@ func (t InspectorIssueCode) String() string {
 
 // InspectorIssueCode values.
 const (
-	InspectorIssueCodeCookieIssue                       InspectorIssueCode = "CookieIssue"
-	InspectorIssueCodeMixedContentIssue                 InspectorIssueCode = "MixedContentIssue"
-	InspectorIssueCodeBlockedByResponseIssue            InspectorIssueCode = "BlockedByResponseIssue"
-	InspectorIssueCodeHeavyAdIssue                      InspectorIssueCode = "HeavyAdIssue"
-	InspectorIssueCodeContentSecurityPolicyIssue        InspectorIssueCode = "ContentSecurityPolicyIssue"
-	InspectorIssueCodeSharedArrayBufferIssue            InspectorIssueCode = "SharedArrayBufferIssue"
-	InspectorIssueCodeLowTextContrastIssue              InspectorIssueCode = "LowTextContrastIssue"
-	InspectorIssueCodeCorsIssue                         InspectorIssueCode = "CorsIssue"
-	InspectorIssueCodeAttributionReportingIssue         InspectorIssueCode = "AttributionReportingIssue"
-	InspectorIssueCodeQuirksModeIssue                   InspectorIssueCode = "QuirksModeIssue"
-	InspectorIssueCodePartitioningBlobURLIssue          InspectorIssueCode = "PartitioningBlobURLIssue"
-	InspectorIssueCodeNavigatorUserAgentIssue           InspectorIssueCode = "NavigatorUserAgentIssue"
-	InspectorIssueCodeGenericIssue                      InspectorIssueCode = "GenericIssue"
-	InspectorIssueCodeDeprecationIssue                  InspectorIssueCode = "DeprecationIssue"
-	InspectorIssueCodeClientHintIssue                   InspectorIssueCode = "ClientHintIssue"
-	InspectorIssueCodeFederatedAuthRequestIssue         InspectorIssueCode = "FederatedAuthRequestIssue"
-	InspectorIssueCodeBounceTrackingIssue               InspectorIssueCode = "BounceTrackingIssue"
-	InspectorIssueCodeCookieDeprecationMetadataIssue    InspectorIssueCode = "CookieDeprecationMetadataIssue"
-	InspectorIssueCodeStylesheetLoadingIssue            InspectorIssueCode = "StylesheetLoadingIssue"
-	InspectorIssueCodeFederatedAuthUserInfoRequestIssue InspectorIssueCode = "FederatedAuthUserInfoRequestIssue"
-	InspectorIssueCodePropertyRuleIssue                 InspectorIssueCode = "PropertyRuleIssue"
-	InspectorIssueCodeSharedDictionaryIssue             InspectorIssueCode = "SharedDictionaryIssue"
-	InspectorIssueCodeSelectElementAccessibilityIssue   InspectorIssueCode = "SelectElementAccessibilityIssue"
-	InspectorIssueCodeSRIMessageSignatureIssue          InspectorIssueCode = "SRIMessageSignatureIssue"
+	InspectorIssueCodeCookieIssue                           InspectorIssueCode = "CookieIssue"
+	InspectorIssueCodeMixedContentIssue                     InspectorIssueCode = "MixedContentIssue"
+	InspectorIssueCodeBlockedByResponseIssue                InspectorIssueCode = "BlockedByResponseIssue"
+	InspectorIssueCodeHeavyAdIssue                          InspectorIssueCode = "HeavyAdIssue"
+	InspectorIssueCodeContentSecurityPolicyIssue            InspectorIssueCode = "ContentSecurityPolicyIssue"
+	InspectorIssueCodeSharedArrayBufferIssue                InspectorIssueCode = "SharedArrayBufferIssue"
+	InspectorIssueCodeCorsIssue                             InspectorIssueCode = "CorsIssue"
+	InspectorIssueCodeAttributionReportingIssue             InspectorIssueCode = "AttributionReportingIssue"
+	InspectorIssueCodeQuirksModeIssue                       InspectorIssueCode = "QuirksModeIssue"
+	InspectorIssueCodePartitioningBlobURLIssue              InspectorIssueCode = "PartitioningBlobURLIssue"
+	InspectorIssueCodeNavigatorUserAgentIssue               InspectorIssueCode = "NavigatorUserAgentIssue"
+	InspectorIssueCodeGenericIssue                          InspectorIssueCode = "GenericIssue"
+	InspectorIssueCodeDeprecationIssue                      InspectorIssueCode = "DeprecationIssue"
+	InspectorIssueCodeClientHintIssue                       InspectorIssueCode = "ClientHintIssue"
+	InspectorIssueCodeFederatedAuthRequestIssue             InspectorIssueCode = "FederatedAuthRequestIssue"
+	InspectorIssueCodeBounceTrackingIssue                   InspectorIssueCode = "BounceTrackingIssue"
+	InspectorIssueCodeCookieDeprecationMetadataIssue        InspectorIssueCode = "CookieDeprecationMetadataIssue"
+	InspectorIssueCodeStylesheetLoadingIssue                InspectorIssueCode = "StylesheetLoadingIssue"
+	InspectorIssueCodeFederatedAuthUserInfoRequestIssue     InspectorIssueCode = "FederatedAuthUserInfoRequestIssue"
+	InspectorIssueCodePropertyRuleIssue                     InspectorIssueCode = "PropertyRuleIssue"
+	InspectorIssueCodeSharedDictionaryIssue                 InspectorIssueCode = "SharedDictionaryIssue"
+	InspectorIssueCodeElementAccessibilityIssue             InspectorIssueCode = "ElementAccessibilityIssue"
+	InspectorIssueCodeSRIMessageSignatureIssue              InspectorIssueCode = "SRIMessageSignatureIssue"
+	InspectorIssueCodeUnencodedDigestIssue                  InspectorIssueCode = "UnencodedDigestIssue"
+	InspectorIssueCodeConnectionAllowlistIssue              InspectorIssueCode = "ConnectionAllowlistIssue"
+	InspectorIssueCodeUserReidentificationIssue             InspectorIssueCode = "UserReidentificationIssue"
+	InspectorIssueCodePermissionElementIssue                InspectorIssueCode = "PermissionElementIssue"
+	InspectorIssueCodePerformanceIssue                      InspectorIssueCode = "PerformanceIssue"
+	InspectorIssueCodeSelectivePermissionsInterventionIssue InspectorIssueCode = "SelectivePermissionsInterventionIssue"
 )
 
 // UnmarshalJSON satisfies [json.Unmarshaler].
@@ -1646,8 +1940,6 @@ func (t *InspectorIssueCode) UnmarshalJSON(buf []byte) error {
 		*t = InspectorIssueCodeContentSecurityPolicyIssue
 	case InspectorIssueCodeSharedArrayBufferIssue:
 		*t = InspectorIssueCodeSharedArrayBufferIssue
-	case InspectorIssueCodeLowTextContrastIssue:
-		*t = InspectorIssueCodeLowTextContrastIssue
 	case InspectorIssueCodeCorsIssue:
 		*t = InspectorIssueCodeCorsIssue
 	case InspectorIssueCodeAttributionReportingIssue:
@@ -1678,10 +1970,22 @@ func (t *InspectorIssueCode) UnmarshalJSON(buf []byte) error {
 		*t = InspectorIssueCodePropertyRuleIssue
 	case InspectorIssueCodeSharedDictionaryIssue:
 		*t = InspectorIssueCodeSharedDictionaryIssue
-	case InspectorIssueCodeSelectElementAccessibilityIssue:
-		*t = InspectorIssueCodeSelectElementAccessibilityIssue
+	case InspectorIssueCodeElementAccessibilityIssue:
+		*t = InspectorIssueCodeElementAccessibilityIssue
 	case InspectorIssueCodeSRIMessageSignatureIssue:
 		*t = InspectorIssueCodeSRIMessageSignatureIssue
+	case InspectorIssueCodeUnencodedDigestIssue:
+		*t = InspectorIssueCodeUnencodedDigestIssue
+	case InspectorIssueCodeConnectionAllowlistIssue:
+		*t = InspectorIssueCodeConnectionAllowlistIssue
+	case InspectorIssueCodeUserReidentificationIssue:
+		*t = InspectorIssueCodeUserReidentificationIssue
+	case InspectorIssueCodePermissionElementIssue:
+		*t = InspectorIssueCodePermissionElementIssue
+	case InspectorIssueCodePerformanceIssue:
+		*t = InspectorIssueCodePerformanceIssue
+	case InspectorIssueCodeSelectivePermissionsInterventionIssue:
+		*t = InspectorIssueCodeSelectivePermissionsInterventionIssue
 	default:
 		return fmt.Errorf("unknown InspectorIssueCode value: %v", s)
 	}
@@ -1694,29 +1998,34 @@ func (t *InspectorIssueCode) UnmarshalJSON(buf []byte) error {
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/Audits#type-InspectorIssueDetails
 type InspectorIssueDetails struct {
-	CookieIssueDetails                       *CookieIssueDetails                       `json:"cookieIssueDetails,omitempty,omitzero"`
-	MixedContentIssueDetails                 *MixedContentIssueDetails                 `json:"mixedContentIssueDetails,omitempty,omitzero"`
-	BlockedByResponseIssueDetails            *BlockedByResponseIssueDetails            `json:"blockedByResponseIssueDetails,omitempty,omitzero"`
-	HeavyAdIssueDetails                      *HeavyAdIssueDetails                      `json:"heavyAdIssueDetails,omitempty,omitzero"`
-	ContentSecurityPolicyIssueDetails        *ContentSecurityPolicyIssueDetails        `json:"contentSecurityPolicyIssueDetails,omitempty,omitzero"`
-	SharedArrayBufferIssueDetails            *SharedArrayBufferIssueDetails            `json:"sharedArrayBufferIssueDetails,omitempty,omitzero"`
-	LowTextContrastIssueDetails              *LowTextContrastIssueDetails              `json:"lowTextContrastIssueDetails,omitempty,omitzero"`
-	CorsIssueDetails                         *CorsIssueDetails                         `json:"corsIssueDetails,omitempty,omitzero"`
-	AttributionReportingIssueDetails         *AttributionReportingIssueDetails         `json:"attributionReportingIssueDetails,omitempty,omitzero"`
-	QuirksModeIssueDetails                   *QuirksModeIssueDetails                   `json:"quirksModeIssueDetails,omitempty,omitzero"`
-	PartitioningBlobURLIssueDetails          *PartitioningBlobURLIssueDetails          `json:"partitioningBlobURLIssueDetails,omitempty,omitzero"`
-	GenericIssueDetails                      *GenericIssueDetails                      `json:"genericIssueDetails,omitempty,omitzero"`
-	DeprecationIssueDetails                  *DeprecationIssueDetails                  `json:"deprecationIssueDetails,omitempty,omitzero"`
-	ClientHintIssueDetails                   *ClientHintIssueDetails                   `json:"clientHintIssueDetails,omitempty,omitzero"`
-	FederatedAuthRequestIssueDetails         *FederatedAuthRequestIssueDetails         `json:"federatedAuthRequestIssueDetails,omitempty,omitzero"`
-	BounceTrackingIssueDetails               *BounceTrackingIssueDetails               `json:"bounceTrackingIssueDetails,omitempty,omitzero"`
-	CookieDeprecationMetadataIssueDetails    *CookieDeprecationMetadataIssueDetails    `json:"cookieDeprecationMetadataIssueDetails,omitempty,omitzero"`
-	StylesheetLoadingIssueDetails            *StylesheetLoadingIssueDetails            `json:"stylesheetLoadingIssueDetails,omitempty,omitzero"`
-	PropertyRuleIssueDetails                 *PropertyRuleIssueDetails                 `json:"propertyRuleIssueDetails,omitempty,omitzero"`
-	FederatedAuthUserInfoRequestIssueDetails *FederatedAuthUserInfoRequestIssueDetails `json:"federatedAuthUserInfoRequestIssueDetails,omitempty,omitzero"`
-	SharedDictionaryIssueDetails             *SharedDictionaryIssueDetails             `json:"sharedDictionaryIssueDetails,omitempty,omitzero"`
-	SelectElementAccessibilityIssueDetails   *SelectElementAccessibilityIssueDetails   `json:"selectElementAccessibilityIssueDetails,omitempty,omitzero"`
-	SriMessageSignatureIssueDetails          *SRIMessageSignatureIssueDetails          `json:"sriMessageSignatureIssueDetails,omitempty,omitzero"`
+	CookieIssueDetails                           *CookieIssueDetails                           `json:"cookieIssueDetails,omitempty,omitzero"`
+	MixedContentIssueDetails                     *MixedContentIssueDetails                     `json:"mixedContentIssueDetails,omitempty,omitzero"`
+	BlockedByResponseIssueDetails                *BlockedByResponseIssueDetails                `json:"blockedByResponseIssueDetails,omitempty,omitzero"`
+	HeavyAdIssueDetails                          *HeavyAdIssueDetails                          `json:"heavyAdIssueDetails,omitempty,omitzero"`
+	ContentSecurityPolicyIssueDetails            *ContentSecurityPolicyIssueDetails            `json:"contentSecurityPolicyIssueDetails,omitempty,omitzero"`
+	SharedArrayBufferIssueDetails                *SharedArrayBufferIssueDetails                `json:"sharedArrayBufferIssueDetails,omitempty,omitzero"`
+	CorsIssueDetails                             *CorsIssueDetails                             `json:"corsIssueDetails,omitempty,omitzero"`
+	AttributionReportingIssueDetails             *AttributionReportingIssueDetails             `json:"attributionReportingIssueDetails,omitempty,omitzero"`
+	QuirksModeIssueDetails                       *QuirksModeIssueDetails                       `json:"quirksModeIssueDetails,omitempty,omitzero"`
+	PartitioningBlobURLIssueDetails              *PartitioningBlobURLIssueDetails              `json:"partitioningBlobURLIssueDetails,omitempty,omitzero"`
+	GenericIssueDetails                          *GenericIssueDetails                          `json:"genericIssueDetails,omitempty,omitzero"`
+	DeprecationIssueDetails                      *DeprecationIssueDetails                      `json:"deprecationIssueDetails,omitempty,omitzero"`
+	ClientHintIssueDetails                       *ClientHintIssueDetails                       `json:"clientHintIssueDetails,omitempty,omitzero"`
+	FederatedAuthRequestIssueDetails             *FederatedAuthRequestIssueDetails             `json:"federatedAuthRequestIssueDetails,omitempty,omitzero"`
+	BounceTrackingIssueDetails                   *BounceTrackingIssueDetails                   `json:"bounceTrackingIssueDetails,omitempty,omitzero"`
+	CookieDeprecationMetadataIssueDetails        *CookieDeprecationMetadataIssueDetails        `json:"cookieDeprecationMetadataIssueDetails,omitempty,omitzero"`
+	StylesheetLoadingIssueDetails                *StylesheetLoadingIssueDetails                `json:"stylesheetLoadingIssueDetails,omitempty,omitzero"`
+	PropertyRuleIssueDetails                     *PropertyRuleIssueDetails                     `json:"propertyRuleIssueDetails,omitempty,omitzero"`
+	FederatedAuthUserInfoRequestIssueDetails     *FederatedAuthUserInfoRequestIssueDetails     `json:"federatedAuthUserInfoRequestIssueDetails,omitempty,omitzero"`
+	SharedDictionaryIssueDetails                 *SharedDictionaryIssueDetails                 `json:"sharedDictionaryIssueDetails,omitempty,omitzero"`
+	ElementAccessibilityIssueDetails             *ElementAccessibilityIssueDetails             `json:"elementAccessibilityIssueDetails,omitempty,omitzero"`
+	SriMessageSignatureIssueDetails              *SRIMessageSignatureIssueDetails              `json:"sriMessageSignatureIssueDetails,omitempty,omitzero"`
+	UnencodedDigestIssueDetails                  *UnencodedDigestIssueDetails                  `json:"unencodedDigestIssueDetails,omitempty,omitzero"`
+	ConnectionAllowlistIssueDetails              *ConnectionAllowlistIssueDetails              `json:"connectionAllowlistIssueDetails,omitempty,omitzero"`
+	UserReidentificationIssueDetails             *UserReidentificationIssueDetails             `json:"userReidentificationIssueDetails,omitempty,omitzero"`
+	PermissionElementIssueDetails                *PermissionElementIssueDetails                `json:"permissionElementIssueDetails,omitempty,omitzero"`
+	PerformanceIssueDetails                      *PerformanceIssueDetails                      `json:"performanceIssueDetails,omitempty,omitzero"`
+	SelectivePermissionsInterventionIssueDetails *SelectivePermissionsInterventionIssueDetails `json:"selectivePermissionsInterventionIssueDetails,omitempty,omitzero"`
 }
 
 // IssueID a unique id for a DevTools inspector issue. Allows other entities

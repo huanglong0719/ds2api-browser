@@ -41,6 +41,7 @@ type Info struct {
 	OpenerID         ID                   `json:"openerId,omitempty,omitzero"`      // Opener target Id
 	CanAccessOpener  bool                 `json:"canAccessOpener"`                  // Whether the target has access to the originating window.
 	OpenerFrameID    cdp.FrameID          `json:"openerFrameId,omitempty,omitzero"` // Frame id of originating window (is only set if target has an opener).
+	ParentFrameID    cdp.FrameID          `json:"parentFrameId,omitempty,omitzero"` // Id of the parent frame, only present for the "iframe" targets.
 	BrowserContextID cdp.BrowserContextID `json:"browserContextId,omitempty,omitzero"`
 	Subtype          string               `json:"subtype,omitempty,omitzero"` // Provides additional details for specific target types. For example, for the type of "page", this may be set to "prerender".
 }
@@ -50,8 +51,8 @@ type Info struct {
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/Target#type-FilterEntry
 type FilterEntry struct {
-	Exclude bool   `json:"exclude,omitempty,omitzero"` // If set, causes exclusion of matching targets from the list.
-	Type    string `json:"type,omitempty,omitzero"`    // If not present, matches any type.
+	Exclude bool   `json:"exclude"`                 // If set, causes exclusion of matching targets from the list.
+	Type    string `json:"type,omitempty,omitzero"` // If not present, matches any type.
 }
 
 // Filter the entries in TargetFilter are matched sequentially against
@@ -62,8 +63,8 @@ type FilterEntry struct {
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/Target#type-TargetFilter
 type Filter []struct {
-	Exclude bool   `json:"exclude,omitempty,omitzero"` // If set, causes exclusion of matching targets from the list.
-	Type    string `json:"type,omitempty,omitzero"`    // If not present, matches any type.
+	Exclude bool   `json:"exclude"`                 // If set, causes exclusion of matching targets from the list.
+	Type    string `json:"type,omitempty,omitzero"` // If not present, matches any type.
 }
 
 // RemoteLocation [no description].

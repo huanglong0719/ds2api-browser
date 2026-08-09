@@ -372,7 +372,10 @@ func (c *Context) newTarget(ctx context.Context) error {
 			c.browserContextOwner = true
 			c.createBrowserContextParams = nil
 		}
-		c.targetID, err = target.CreateTarget("about:blank").WithBrowserContextID(c.BrowserContextID).Do(browserExecutor)
+		c.targetID, err = target.
+			CreateTarget("about:blank").
+			WithBrowserContextID(c.BrowserContextID).
+			Do(browserExecutor)
 		if err != nil {
 			return err
 		}
@@ -612,6 +615,11 @@ func responseAction(resp **network.Response, actions ...Action) Action {
 				// Ignore load events before the "init"
 				// lifecycle event, as those are old.
 				if hasInit {
+					finished = true
+					lcancel()
+				}
+			case *page.EventFrameStoppedLoading:
+				if hasInit && ev.FrameID == frameID {
 					finished = true
 					lcancel()
 				}

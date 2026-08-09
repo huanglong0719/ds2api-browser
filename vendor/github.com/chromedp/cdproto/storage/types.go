@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/target"
 )
 
 // SerializedStorageKey [no description].
@@ -244,91 +245,111 @@ func (t *InterestGroupAuctionFetchType) UnmarshalJSON(buf []byte) error {
 	return nil
 }
 
-// SharedStorageAccessType enum of shared storage access types.
+// SharedStorageAccessScope enum of shared storage access scopes.
 //
-// See: https://chromedevtools.github.io/devtools-protocol/tot/Storage#type-SharedStorageAccessType
-type SharedStorageAccessType string
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Storage#type-SharedStorageAccessScope
+type SharedStorageAccessScope string
 
-// String returns the SharedStorageAccessType as string value.
-func (t SharedStorageAccessType) String() string {
+// String returns the SharedStorageAccessScope as string value.
+func (t SharedStorageAccessScope) String() string {
 	return string(t)
 }
 
-// SharedStorageAccessType values.
+// SharedStorageAccessScope values.
 const (
-	SharedStorageAccessTypeDocumentAddModule      SharedStorageAccessType = "documentAddModule"
-	SharedStorageAccessTypeDocumentSelectURL      SharedStorageAccessType = "documentSelectURL"
-	SharedStorageAccessTypeDocumentRun            SharedStorageAccessType = "documentRun"
-	SharedStorageAccessTypeDocumentSet            SharedStorageAccessType = "documentSet"
-	SharedStorageAccessTypeDocumentAppend         SharedStorageAccessType = "documentAppend"
-	SharedStorageAccessTypeDocumentDelete         SharedStorageAccessType = "documentDelete"
-	SharedStorageAccessTypeDocumentClear          SharedStorageAccessType = "documentClear"
-	SharedStorageAccessTypeDocumentGet            SharedStorageAccessType = "documentGet"
-	SharedStorageAccessTypeWorkletSet             SharedStorageAccessType = "workletSet"
-	SharedStorageAccessTypeWorkletAppend          SharedStorageAccessType = "workletAppend"
-	SharedStorageAccessTypeWorkletDelete          SharedStorageAccessType = "workletDelete"
-	SharedStorageAccessTypeWorkletClear           SharedStorageAccessType = "workletClear"
-	SharedStorageAccessTypeWorkletGet             SharedStorageAccessType = "workletGet"
-	SharedStorageAccessTypeWorkletKeys            SharedStorageAccessType = "workletKeys"
-	SharedStorageAccessTypeWorkletEntries         SharedStorageAccessType = "workletEntries"
-	SharedStorageAccessTypeWorkletLength          SharedStorageAccessType = "workletLength"
-	SharedStorageAccessTypeWorkletRemainingBudget SharedStorageAccessType = "workletRemainingBudget"
-	SharedStorageAccessTypeHeaderSet              SharedStorageAccessType = "headerSet"
-	SharedStorageAccessTypeHeaderAppend           SharedStorageAccessType = "headerAppend"
-	SharedStorageAccessTypeHeaderDelete           SharedStorageAccessType = "headerDelete"
-	SharedStorageAccessTypeHeaderClear            SharedStorageAccessType = "headerClear"
+	SharedStorageAccessScopeWindow                   SharedStorageAccessScope = "window"
+	SharedStorageAccessScopeSharedStorageWorklet     SharedStorageAccessScope = "sharedStorageWorklet"
+	SharedStorageAccessScopeProtectedAudienceWorklet SharedStorageAccessScope = "protectedAudienceWorklet"
+	SharedStorageAccessScopeHeader                   SharedStorageAccessScope = "header"
 )
 
 // UnmarshalJSON satisfies [json.Unmarshaler].
-func (t *SharedStorageAccessType) UnmarshalJSON(buf []byte) error {
+func (t *SharedStorageAccessScope) UnmarshalJSON(buf []byte) error {
 	s := string(buf)
 	s = strings.TrimSuffix(strings.TrimPrefix(s, `"`), `"`)
 
-	switch SharedStorageAccessType(s) {
-	case SharedStorageAccessTypeDocumentAddModule:
-		*t = SharedStorageAccessTypeDocumentAddModule
-	case SharedStorageAccessTypeDocumentSelectURL:
-		*t = SharedStorageAccessTypeDocumentSelectURL
-	case SharedStorageAccessTypeDocumentRun:
-		*t = SharedStorageAccessTypeDocumentRun
-	case SharedStorageAccessTypeDocumentSet:
-		*t = SharedStorageAccessTypeDocumentSet
-	case SharedStorageAccessTypeDocumentAppend:
-		*t = SharedStorageAccessTypeDocumentAppend
-	case SharedStorageAccessTypeDocumentDelete:
-		*t = SharedStorageAccessTypeDocumentDelete
-	case SharedStorageAccessTypeDocumentClear:
-		*t = SharedStorageAccessTypeDocumentClear
-	case SharedStorageAccessTypeDocumentGet:
-		*t = SharedStorageAccessTypeDocumentGet
-	case SharedStorageAccessTypeWorkletSet:
-		*t = SharedStorageAccessTypeWorkletSet
-	case SharedStorageAccessTypeWorkletAppend:
-		*t = SharedStorageAccessTypeWorkletAppend
-	case SharedStorageAccessTypeWorkletDelete:
-		*t = SharedStorageAccessTypeWorkletDelete
-	case SharedStorageAccessTypeWorkletClear:
-		*t = SharedStorageAccessTypeWorkletClear
-	case SharedStorageAccessTypeWorkletGet:
-		*t = SharedStorageAccessTypeWorkletGet
-	case SharedStorageAccessTypeWorkletKeys:
-		*t = SharedStorageAccessTypeWorkletKeys
-	case SharedStorageAccessTypeWorkletEntries:
-		*t = SharedStorageAccessTypeWorkletEntries
-	case SharedStorageAccessTypeWorkletLength:
-		*t = SharedStorageAccessTypeWorkletLength
-	case SharedStorageAccessTypeWorkletRemainingBudget:
-		*t = SharedStorageAccessTypeWorkletRemainingBudget
-	case SharedStorageAccessTypeHeaderSet:
-		*t = SharedStorageAccessTypeHeaderSet
-	case SharedStorageAccessTypeHeaderAppend:
-		*t = SharedStorageAccessTypeHeaderAppend
-	case SharedStorageAccessTypeHeaderDelete:
-		*t = SharedStorageAccessTypeHeaderDelete
-	case SharedStorageAccessTypeHeaderClear:
-		*t = SharedStorageAccessTypeHeaderClear
+	switch SharedStorageAccessScope(s) {
+	case SharedStorageAccessScopeWindow:
+		*t = SharedStorageAccessScopeWindow
+	case SharedStorageAccessScopeSharedStorageWorklet:
+		*t = SharedStorageAccessScopeSharedStorageWorklet
+	case SharedStorageAccessScopeProtectedAudienceWorklet:
+		*t = SharedStorageAccessScopeProtectedAudienceWorklet
+	case SharedStorageAccessScopeHeader:
+		*t = SharedStorageAccessScopeHeader
 	default:
-		return fmt.Errorf("unknown SharedStorageAccessType value: %v", s)
+		return fmt.Errorf("unknown SharedStorageAccessScope value: %v", s)
+	}
+	return nil
+}
+
+// SharedStorageAccessMethod enum of shared storage access methods.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Storage#type-SharedStorageAccessMethod
+type SharedStorageAccessMethod string
+
+// String returns the SharedStorageAccessMethod as string value.
+func (t SharedStorageAccessMethod) String() string {
+	return string(t)
+}
+
+// SharedStorageAccessMethod values.
+const (
+	SharedStorageAccessMethodAddModule       SharedStorageAccessMethod = "addModule"
+	SharedStorageAccessMethodCreateWorklet   SharedStorageAccessMethod = "createWorklet"
+	SharedStorageAccessMethodSelectURL       SharedStorageAccessMethod = "selectURL"
+	SharedStorageAccessMethodRun             SharedStorageAccessMethod = "run"
+	SharedStorageAccessMethodBatchUpdate     SharedStorageAccessMethod = "batchUpdate"
+	SharedStorageAccessMethodSet             SharedStorageAccessMethod = "set"
+	SharedStorageAccessMethodAppend          SharedStorageAccessMethod = "append"
+	SharedStorageAccessMethodDelete          SharedStorageAccessMethod = "delete"
+	SharedStorageAccessMethodClear           SharedStorageAccessMethod = "clear"
+	SharedStorageAccessMethodGet             SharedStorageAccessMethod = "get"
+	SharedStorageAccessMethodKeys            SharedStorageAccessMethod = "keys"
+	SharedStorageAccessMethodValues          SharedStorageAccessMethod = "values"
+	SharedStorageAccessMethodEntries         SharedStorageAccessMethod = "entries"
+	SharedStorageAccessMethodLength          SharedStorageAccessMethod = "length"
+	SharedStorageAccessMethodRemainingBudget SharedStorageAccessMethod = "remainingBudget"
+)
+
+// UnmarshalJSON satisfies [json.Unmarshaler].
+func (t *SharedStorageAccessMethod) UnmarshalJSON(buf []byte) error {
+	s := string(buf)
+	s = strings.TrimSuffix(strings.TrimPrefix(s, `"`), `"`)
+
+	switch SharedStorageAccessMethod(s) {
+	case SharedStorageAccessMethodAddModule:
+		*t = SharedStorageAccessMethodAddModule
+	case SharedStorageAccessMethodCreateWorklet:
+		*t = SharedStorageAccessMethodCreateWorklet
+	case SharedStorageAccessMethodSelectURL:
+		*t = SharedStorageAccessMethodSelectURL
+	case SharedStorageAccessMethodRun:
+		*t = SharedStorageAccessMethodRun
+	case SharedStorageAccessMethodBatchUpdate:
+		*t = SharedStorageAccessMethodBatchUpdate
+	case SharedStorageAccessMethodSet:
+		*t = SharedStorageAccessMethodSet
+	case SharedStorageAccessMethodAppend:
+		*t = SharedStorageAccessMethodAppend
+	case SharedStorageAccessMethodDelete:
+		*t = SharedStorageAccessMethodDelete
+	case SharedStorageAccessMethodClear:
+		*t = SharedStorageAccessMethodClear
+	case SharedStorageAccessMethodGet:
+		*t = SharedStorageAccessMethodGet
+	case SharedStorageAccessMethodKeys:
+		*t = SharedStorageAccessMethodKeys
+	case SharedStorageAccessMethodValues:
+		*t = SharedStorageAccessMethodValues
+	case SharedStorageAccessMethodEntries:
+		*t = SharedStorageAccessMethodEntries
+	case SharedStorageAccessMethodLength:
+		*t = SharedStorageAccessMethodLength
+	case SharedStorageAccessMethodRemainingBudget:
+		*t = SharedStorageAccessMethodRemainingBudget
+	default:
+		return fmt.Errorf("unknown SharedStorageAccessMethod value: %v", s)
 	}
 	return nil
 }
@@ -350,6 +371,17 @@ type SharedStorageMetadata struct {
 	Length          int64               `json:"length"`          // Number of key-value pairs stored in origin's shared storage.
 	RemainingBudget float64             `json:"remainingBudget"` // Current amount of bits of entropy remaining in the navigation budget.
 	BytesUsed       int64               `json:"bytesUsed"`       // Total number of bytes stored as key-value pairs in origin's shared storage.
+}
+
+// SharedStoragePrivateAggregationConfig represents a dictionary object
+// passed in as privateAggregationConfig to run or selectURL.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Storage#type-SharedStoragePrivateAggregationConfig
+type SharedStoragePrivateAggregationConfig struct {
+	AggregationCoordinatorOrigin string `json:"aggregationCoordinatorOrigin,omitempty,omitzero"` // The chosen aggregation service deployment.
+	ContextID                    string `json:"contextId,omitempty,omitzero"`                    // The context ID provided.
+	FilteringIDMaxBytes          int64  `json:"filteringIdMaxBytes"`                             // Configures the maximum size allowed for filtering IDs.
+	MaxContributions             int64  `json:"maxContributions,omitempty,omitzero"`             // The limit on the number of contributions in the final report.
 }
 
 // SharedStorageReportingMetadata pair of reporting metadata details for a
@@ -375,13 +407,23 @@ type SharedStorageURLWithMetadata struct {
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/Storage#type-SharedStorageAccessParams
 type SharedStorageAccessParams struct {
-	ScriptSourceURL  string                          `json:"scriptSourceUrl,omitempty,omitzero"`  // Spec of the module script URL. Present only for SharedStorageAccessType.documentAddModule.
-	OperationName    string                          `json:"operationName,omitempty,omitzero"`    // Name of the registered operation to be run. Present only for SharedStorageAccessType.documentRun and SharedStorageAccessType.documentSelectURL.
-	SerializedData   string                          `json:"serializedData,omitempty,omitzero"`   // The operation's serialized data in bytes (converted to a string). Present only for SharedStorageAccessType.documentRun and SharedStorageAccessType.documentSelectURL.
-	URLsWithMetadata []*SharedStorageURLWithMetadata `json:"urlsWithMetadata,omitempty,omitzero"` // Array of candidate URLs' specs, along with any associated metadata. Present only for SharedStorageAccessType.documentSelectURL.
-	Key              string                          `json:"key,omitempty,omitzero"`              // Key for a specific entry in an origin's shared storage. Present only for SharedStorageAccessType.documentSet, SharedStorageAccessType.documentAppend, SharedStorageAccessType.documentDelete, SharedStorageAccessType.workletSet, SharedStorageAccessType.workletAppend, SharedStorageAccessType.workletDelete, SharedStorageAccessType.workletGet, SharedStorageAccessType.headerSet, SharedStorageAccessType.headerAppend, and SharedStorageAccessType.headerDelete.
-	Value            string                          `json:"value,omitempty,omitzero"`            // Value for a specific entry in an origin's shared storage. Present only for SharedStorageAccessType.documentSet, SharedStorageAccessType.documentAppend, SharedStorageAccessType.workletSet, SharedStorageAccessType.workletAppend, SharedStorageAccessType.headerSet, and SharedStorageAccessType.headerAppend.
-	IgnoreIfPresent  bool                            `json:"ignoreIfPresent,omitempty,omitzero"`  // Whether or not to set an entry for a key if that key is already present. Present only for SharedStorageAccessType.documentSet, SharedStorageAccessType.workletSet, and SharedStorageAccessType.headerSet.
+	ScriptSourceURL          string                                 `json:"scriptSourceUrl,omitempty,omitzero"`          // Spec of the module script URL. Present only for SharedStorageAccessMethods: addModule and createWorklet.
+	DataOrigin               string                                 `json:"dataOrigin,omitempty,omitzero"`               // String denoting "context-origin", "script-origin", or a custom origin to be used as the worklet's data origin. Present only for SharedStorageAccessMethod: createWorklet.
+	OperationName            string                                 `json:"operationName,omitempty,omitzero"`            // Name of the registered operation to be run. Present only for SharedStorageAccessMethods: run and selectURL.
+	OperationID              string                                 `json:"operationId,omitempty,omitzero"`              // ID of the operation call. Present only for SharedStorageAccessMethods: run and selectURL.
+	KeepAlive                bool                                   `json:"keepAlive"`                                   // Whether or not to keep the worket alive for future run or selectURL calls. Present only for SharedStorageAccessMethods: run and selectURL.
+	PrivateAggregationConfig *SharedStoragePrivateAggregationConfig `json:"privateAggregationConfig,omitempty,omitzero"` // Configures the private aggregation options. Present only for SharedStorageAccessMethods: run and selectURL.
+	SerializedData           string                                 `json:"serializedData,omitempty,omitzero"`           // The operation's serialized data in bytes (converted to a string). Present only for SharedStorageAccessMethods: run and selectURL. TODO(crbug.com/401011862): Consider updating this parameter to binary.
+	URLsWithMetadata         []*SharedStorageURLWithMetadata        `json:"urlsWithMetadata,omitempty,omitzero"`         // Array of candidate URLs' specs, along with any associated metadata. Present only for SharedStorageAccessMethod: selectURL.
+	UrnUUID                  string                                 `json:"urnUuid,omitempty,omitzero"`                  // Spec of the URN:UUID generated for a selectURL call. Present only for SharedStorageAccessMethod: selectURL.
+	Key                      string                                 `json:"key,omitempty,omitzero"`                      // Key for a specific entry in an origin's shared storage. Present only for SharedStorageAccessMethods: set, append, delete, and get.
+	Value                    string                                 `json:"value,omitempty,omitzero"`                    // Value for a specific entry in an origin's shared storage. Present only for SharedStorageAccessMethods: set and append.
+	IgnoreIfPresent          bool                                   `json:"ignoreIfPresent"`                             // Whether or not to set an entry for a key if that key is already present. Present only for SharedStorageAccessMethod: set.
+	WorkletOrdinal           int64                                  `json:"workletOrdinal,omitempty,omitzero"`           // A number denoting the (0-based) order of the worklet's creation relative to all other shared storage worklets created by documents using the current storage partition. Present only for SharedStorageAccessMethods: addModule, createWorklet.
+	WorkletTargetID          target.ID                              `json:"workletTargetId,omitempty,omitzero"`          // Hex representation of the DevTools token used as the TargetID for the associated shared storage worklet. Present only for SharedStorageAccessMethods: addModule, createWorklet, run, selectURL, and any other SharedStorageAccessMethod when the SharedStorageAccessScope is sharedStorageWorklet.
+	WithLock                 string                                 `json:"withLock,omitempty,omitzero"`                 // Name of the lock to be acquired, if present. Optionally present only for SharedStorageAccessMethods: batchUpdate, set, append, delete, and clear.
+	BatchUpdateID            string                                 `json:"batchUpdateId,omitempty,omitzero"`            // If the method has been called as part of a batchUpdate, then this number identifies the batch to which it belongs. Optionally present only for SharedStorageAccessMethods: batchUpdate (required), set, append, delete, and clear.
+	BatchSize                int64                                  `json:"batchSize,omitempty,omitzero"`                // Number of modifier methods sent in batch. Present only for SharedStorageAccessMethod: batchUpdate.
 }
 
 // BucketsDurability [no description].
@@ -538,14 +580,6 @@ type AttributionReportingEventReportWindows struct {
 	Ends  []int64 `json:"ends"`  // duration in seconds
 }
 
-// AttributionReportingTriggerSpec [no description].
-//
-// See: https://chromedevtools.github.io/devtools-protocol/tot/Storage#type-AttributionReportingTriggerSpec
-type AttributionReportingTriggerSpec struct {
-	TriggerData        []float64                               `json:"triggerData"` // number instead of integer because not all uint32 can be represented by int
-	EventReportWindows *AttributionReportingEventReportWindows `json:"eventReportWindows"`
-}
-
 // AttributionReportingTriggerDataMatching [no description].
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/Storage#type-AttributionReportingTriggerDataMatching
@@ -606,13 +640,22 @@ type AttributionScopesData struct {
 	MaxEventStates float64  `json:"maxEventStates"`
 }
 
+// AttributionReportingNamedBudgetDef [no description].
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Storage#type-AttributionReportingNamedBudgetDef
+type AttributionReportingNamedBudgetDef struct {
+	Name   string `json:"name"`
+	Budget int64  `json:"budget"`
+}
+
 // AttributionReportingSourceRegistration [no description].
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/Storage#type-AttributionReportingSourceRegistration
 type AttributionReportingSourceRegistration struct {
 	Time                             *cdp.TimeSinceEpoch                                   `json:"time"`
-	Expiry                           int64                                                 `json:"expiry"` // duration in seconds
-	TriggerSpecs                     []*AttributionReportingTriggerSpec                    `json:"triggerSpecs"`
+	Expiry                           int64                                                 `json:"expiry"`      // duration in seconds
+	TriggerData                      []float64                                             `json:"triggerData"` // number instead of integer because not all uint32 can be represented by int
+	EventReportWindows               *AttributionReportingEventReportWindows               `json:"eventReportWindows"`
 	AggregatableReportWindow         int64                                                 `json:"aggregatableReportWindow"` // duration in seconds
 	Type                             AttributionReportingSourceType                        `json:"type"`
 	SourceOrigin                     string                                                `json:"sourceOrigin"`
@@ -628,6 +671,9 @@ type AttributionReportingSourceRegistration struct {
 	AggregatableDebugReportingConfig *AttributionReportingAggregatableDebugReportingConfig `json:"aggregatableDebugReportingConfig"`
 	ScopesData                       *AttributionScopesData                                `json:"scopesData,omitempty,omitzero"`
 	MaxEventLevelReports             int64                                                 `json:"maxEventLevelReports"`
+	NamedBudgets                     []*AttributionReportingNamedBudgetDef                 `json:"namedBudgets"`
+	DebugReporting                   bool                                                  `json:"debugReporting"`
+	EventLevelEpsilon                float64                                               `json:"eventLevelEpsilon"`
 }
 
 // AttributionReportingSourceRegistrationResult [no description].
@@ -780,6 +826,14 @@ type AttributionReportingAggregatableDedupKey struct {
 	Filters  *AttributionReportingFilterPair `json:"filters"`
 }
 
+// AttributionReportingNamedBudgetCandidate [no description].
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Storage#type-AttributionReportingNamedBudgetCandidate
+type AttributionReportingNamedBudgetCandidate struct {
+	Name    string                          `json:"name,omitempty,omitzero"`
+	Filters *AttributionReportingFilterPair `json:"filters"`
+}
+
 // AttributionReportingTriggerRegistration [no description].
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/Storage#type-AttributionReportingTriggerRegistration
@@ -797,6 +851,7 @@ type AttributionReportingTriggerRegistration struct {
 	TriggerContextID                 string                                                `json:"triggerContextId,omitempty,omitzero"`
 	AggregatableDebugReportingConfig *AttributionReportingAggregatableDebugReportingConfig `json:"aggregatableDebugReportingConfig"`
 	Scopes                           []string                                              `json:"scopes"`
+	NamedBudgets                     []*AttributionReportingNamedBudgetCandidate           `json:"namedBudgets"`
 }
 
 // AttributionReportingEventLevelResult [no description].
@@ -949,6 +1004,44 @@ func (t *AttributionReportingAggregatableResult) UnmarshalJSON(buf []byte) error
 		*t = AttributionReportingAggregatableResultExcessiveReports
 	default:
 		return fmt.Errorf("unknown AttributionReportingAggregatableResult value: %v", s)
+	}
+	return nil
+}
+
+// AttributionReportingReportResult [no description].
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Storage#type-AttributionReportingReportResult
+type AttributionReportingReportResult string
+
+// String returns the AttributionReportingReportResult as string value.
+func (t AttributionReportingReportResult) String() string {
+	return string(t)
+}
+
+// AttributionReportingReportResult values.
+const (
+	AttributionReportingReportResultSent             AttributionReportingReportResult = "sent"
+	AttributionReportingReportResultProhibited       AttributionReportingReportResult = "prohibited"
+	AttributionReportingReportResultFailedToAssemble AttributionReportingReportResult = "failedToAssemble"
+	AttributionReportingReportResultExpired          AttributionReportingReportResult = "expired"
+)
+
+// UnmarshalJSON satisfies [json.Unmarshaler].
+func (t *AttributionReportingReportResult) UnmarshalJSON(buf []byte) error {
+	s := string(buf)
+	s = strings.TrimSuffix(strings.TrimPrefix(s, `"`), `"`)
+
+	switch AttributionReportingReportResult(s) {
+	case AttributionReportingReportResultSent:
+		*t = AttributionReportingReportResultSent
+	case AttributionReportingReportResultProhibited:
+		*t = AttributionReportingReportResultProhibited
+	case AttributionReportingReportResultFailedToAssemble:
+		*t = AttributionReportingReportResultFailedToAssemble
+	case AttributionReportingReportResultExpired:
+		*t = AttributionReportingReportResultExpired
+	default:
+		return fmt.Errorf("unknown AttributionReportingReportResult value: %v", s)
 	}
 	return nil
 }

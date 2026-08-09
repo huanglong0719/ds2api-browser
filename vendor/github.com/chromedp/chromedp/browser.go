@@ -16,6 +16,20 @@ import (
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	jsonv2 "github.com/go-json-experiment/json"
+	"github.com/go-json-experiment/json/jsontext"
+)
+
+var (
+	// DefaultUnmarshalOptions are default unmarshal options.
+	DefaultUnmarshalOptions = jsonv2.JoinOptions(
+		jsonv2.DefaultOptionsV2(),
+		jsontext.AllowInvalidUTF8(true),
+	)
+	// DefaultMarshalOptions are default marshal options.
+	DefaultMarshalOptions = jsonv2.JoinOptions(
+		jsonv2.DefaultOptionsV2(),
+		jsontext.AllowInvalidUTF8(true),
+	)
 )
 
 // Browser is the high-level Chrome DevTools Protocol browser manager, handling
@@ -194,7 +208,7 @@ func (b *Browser) execute(ctx context.Context, method string, params, res any) e
 	var buf []byte
 	if params != nil {
 		var err error
-		if buf, err = jsonv2.Marshal(params); err != nil {
+		if buf, err = jsonv2.Marshal(params, DefaultMarshalOptions); err != nil {
 			return err
 		}
 	}
@@ -220,7 +234,7 @@ func (b *Browser) execute(ctx context.Context, method string, params, res any) e
 		case msg.Error != nil:
 			return msg.Error
 		case res != nil:
-			return jsonv2.Unmarshal(msg.Result, res)
+			return jsonv2.Unmarshal(msg.Result, res, DefaultUnmarshalOptions)
 		}
 	}
 	return nil
@@ -245,6 +259,10 @@ func (b *Browser) run(ctx context.Context) {
 		for {
 			msg := new(cdproto.Message)
 			if err := b.conn.Read(ctx, msg); err != nil {
+				var syntacticError *jsontext.SyntacticError
+				if errors.As(err, &syntacticError) {
+					b.errf("%s", err)
+				}
 				return
 			}
 
@@ -257,7 +275,7 @@ func (b *Browser) run(ctx context.Context) {
 				}
 
 			case msg.Method != "":
-				ev, err := cdproto.UnmarshalMessage(msg)
+				ev, err := cdproto.UnmarshalMessage(msg, DefaultUnmarshalOptions)
 				if err != nil {
 					b.errf("%s", err)
 					continue

@@ -31,6 +31,7 @@ type RuleSet struct {
 	URL           string            `json:"url,omitempty,omitzero"`
 	RequestID     network.RequestID `json:"requestId,omitempty,omitzero"`
 	ErrorType     RuleSetErrorType  `json:"errorType,omitempty,omitzero"` // Error information errorMessage is null iff errorType is null.
+	Tag           string            `json:"tag,omitempty,omitzero"`       // For more details, see: https://github.com/WICG/nav-speculation/blob/main/speculation-rules-tags.md
 }
 
 // RuleSetErrorType [no description].
@@ -45,8 +46,9 @@ func (t RuleSetErrorType) String() string {
 
 // RuleSetErrorType values.
 const (
-	RuleSetErrorTypeSourceIsNotJSONObject RuleSetErrorType = "SourceIsNotJsonObject"
-	RuleSetErrorTypeInvalidRulesSkipped   RuleSetErrorType = "InvalidRulesSkipped"
+	RuleSetErrorTypeSourceIsNotJSONObject  RuleSetErrorType = "SourceIsNotJsonObject"
+	RuleSetErrorTypeInvalidRulesSkipped    RuleSetErrorType = "InvalidRulesSkipped"
+	RuleSetErrorTypeInvalidRulesetLevelTag RuleSetErrorType = "InvalidRulesetLevelTag"
 )
 
 // UnmarshalJSON satisfies [json.Unmarshaler].
@@ -59,6 +61,8 @@ func (t *RuleSetErrorType) UnmarshalJSON(buf []byte) error {
 		*t = RuleSetErrorTypeSourceIsNotJSONObject
 	case RuleSetErrorTypeInvalidRulesSkipped:
 		*t = RuleSetErrorTypeInvalidRulesSkipped
+	case RuleSetErrorTypeInvalidRulesetLevelTag:
+		*t = RuleSetErrorTypeInvalidRulesetLevelTag
 	default:
 		return fmt.Errorf("unknown RuleSetErrorType value: %v", s)
 	}
@@ -79,8 +83,9 @@ func (t SpeculationAction) String() string {
 
 // SpeculationAction values.
 const (
-	SpeculationActionPrefetch  SpeculationAction = "Prefetch"
-	SpeculationActionPrerender SpeculationAction = "Prerender"
+	SpeculationActionPrefetch             SpeculationAction = "Prefetch"
+	SpeculationActionPrerender            SpeculationAction = "Prerender"
+	SpeculationActionPrerenderUntilScript SpeculationAction = "PrerenderUntilScript"
 )
 
 // UnmarshalJSON satisfies [json.Unmarshaler].
@@ -93,6 +98,8 @@ func (t *SpeculationAction) UnmarshalJSON(buf []byte) error {
 		*t = SpeculationActionPrefetch
 	case SpeculationActionPrerender:
 		*t = SpeculationActionPrerender
+	case SpeculationActionPrerenderUntilScript:
+		*t = SpeculationActionPrerenderUntilScript
 	default:
 		return fmt.Errorf("unknown SpeculationAction value: %v", s)
 	}
@@ -191,7 +198,6 @@ const (
 	PrerenderFinalStatusInvalidSchemeRedirect                                      PrerenderFinalStatus = "InvalidSchemeRedirect"
 	PrerenderFinalStatusInvalidSchemeNavigation                                    PrerenderFinalStatus = "InvalidSchemeNavigation"
 	PrerenderFinalStatusNavigationRequestBlockedByCsp                              PrerenderFinalStatus = "NavigationRequestBlockedByCsp"
-	PrerenderFinalStatusMainFrameNavigation                                        PrerenderFinalStatus = "MainFrameNavigation"
 	PrerenderFinalStatusMojoBinderPolicy                                           PrerenderFinalStatus = "MojoBinderPolicy"
 	PrerenderFinalStatusRendererProcessCrashed                                     PrerenderFinalStatus = "RendererProcessCrashed"
 	PrerenderFinalStatusRendererProcessKilled                                      PrerenderFinalStatus = "RendererProcessKilled"
@@ -259,6 +265,7 @@ const (
 	PrerenderFinalStatusV8optimizerDisabled                                        PrerenderFinalStatus = "V8OptimizerDisabled"
 	PrerenderFinalStatusPrerenderFailedDuringPrefetch                              PrerenderFinalStatus = "PrerenderFailedDuringPrefetch"
 	PrerenderFinalStatusBrowsingDataRemoved                                        PrerenderFinalStatus = "BrowsingDataRemoved"
+	PrerenderFinalStatusPrerenderHostReused                                        PrerenderFinalStatus = "PrerenderHostReused"
 )
 
 // UnmarshalJSON satisfies [json.Unmarshaler].
@@ -279,8 +286,6 @@ func (t *PrerenderFinalStatus) UnmarshalJSON(buf []byte) error {
 		*t = PrerenderFinalStatusInvalidSchemeNavigation
 	case PrerenderFinalStatusNavigationRequestBlockedByCsp:
 		*t = PrerenderFinalStatusNavigationRequestBlockedByCsp
-	case PrerenderFinalStatusMainFrameNavigation:
-		*t = PrerenderFinalStatusMainFrameNavigation
 	case PrerenderFinalStatusMojoBinderPolicy:
 		*t = PrerenderFinalStatusMojoBinderPolicy
 	case PrerenderFinalStatusRendererProcessCrashed:
@@ -415,6 +420,8 @@ func (t *PrerenderFinalStatus) UnmarshalJSON(buf []byte) error {
 		*t = PrerenderFinalStatusPrerenderFailedDuringPrefetch
 	case PrerenderFinalStatusBrowsingDataRemoved:
 		*t = PrerenderFinalStatusBrowsingDataRemoved
+	case PrerenderFinalStatusPrerenderHostReused:
+		*t = PrerenderFinalStatusPrerenderHostReused
 	default:
 		return fmt.Errorf("unknown PrerenderFinalStatus value: %v", s)
 	}
@@ -486,6 +493,7 @@ const (
 	PrefetchStatusPrefetchFailedMIMENotSupported                              PrefetchStatus = "PrefetchFailedMIMENotSupported"
 	PrefetchStatusPrefetchFailedNetError                                      PrefetchStatus = "PrefetchFailedNetError"
 	PrefetchStatusPrefetchFailedNon2xX                                        PrefetchStatus = "PrefetchFailedNon2XX"
+	PrefetchStatusPrefetchEvictedAfterBrowsingDataRemoved                     PrefetchStatus = "PrefetchEvictedAfterBrowsingDataRemoved"
 	PrefetchStatusPrefetchEvictedAfterCandidateRemoved                        PrefetchStatus = "PrefetchEvictedAfterCandidateRemoved"
 	PrefetchStatusPrefetchEvictedForNewerPrefetch                             PrefetchStatus = "PrefetchEvictedForNewerPrefetch"
 	PrefetchStatusPrefetchHeldback                                            PrefetchStatus = "PrefetchHeldback"
@@ -501,6 +509,9 @@ const (
 	PrefetchStatusPrefetchNotEligibleSchemeIsNotHTTPS                         PrefetchStatus = "PrefetchNotEligibleSchemeIsNotHttps"
 	PrefetchStatusPrefetchNotEligibleUserHasCookies                           PrefetchStatus = "PrefetchNotEligibleUserHasCookies"
 	PrefetchStatusPrefetchNotEligibleUserHasServiceWorker                     PrefetchStatus = "PrefetchNotEligibleUserHasServiceWorker"
+	PrefetchStatusPrefetchNotEligibleUserHasServiceWorkerNoFetchHandler       PrefetchStatus = "PrefetchNotEligibleUserHasServiceWorkerNoFetchHandler"
+	PrefetchStatusPrefetchNotEligibleRedirectFromServiceWorker                PrefetchStatus = "PrefetchNotEligibleRedirectFromServiceWorker"
+	PrefetchStatusPrefetchNotEligibleRedirectToServiceWorker                  PrefetchStatus = "PrefetchNotEligibleRedirectToServiceWorker"
 	PrefetchStatusPrefetchNotEligibleBatterySaverEnabled                      PrefetchStatus = "PrefetchNotEligibleBatterySaverEnabled"
 	PrefetchStatusPrefetchNotEligiblePreloadingDisabled                       PrefetchStatus = "PrefetchNotEligiblePreloadingDisabled"
 	PrefetchStatusPrefetchNotFinishedInTime                                   PrefetchStatus = "PrefetchNotFinishedInTime"
@@ -530,6 +541,8 @@ func (t *PrefetchStatus) UnmarshalJSON(buf []byte) error {
 		*t = PrefetchStatusPrefetchFailedNetError
 	case PrefetchStatusPrefetchFailedNon2xX:
 		*t = PrefetchStatusPrefetchFailedNon2xX
+	case PrefetchStatusPrefetchEvictedAfterBrowsingDataRemoved:
+		*t = PrefetchStatusPrefetchEvictedAfterBrowsingDataRemoved
 	case PrefetchStatusPrefetchEvictedAfterCandidateRemoved:
 		*t = PrefetchStatusPrefetchEvictedAfterCandidateRemoved
 	case PrefetchStatusPrefetchEvictedForNewerPrefetch:
@@ -560,6 +573,12 @@ func (t *PrefetchStatus) UnmarshalJSON(buf []byte) error {
 		*t = PrefetchStatusPrefetchNotEligibleUserHasCookies
 	case PrefetchStatusPrefetchNotEligibleUserHasServiceWorker:
 		*t = PrefetchStatusPrefetchNotEligibleUserHasServiceWorker
+	case PrefetchStatusPrefetchNotEligibleUserHasServiceWorkerNoFetchHandler:
+		*t = PrefetchStatusPrefetchNotEligibleUserHasServiceWorkerNoFetchHandler
+	case PrefetchStatusPrefetchNotEligibleRedirectFromServiceWorker:
+		*t = PrefetchStatusPrefetchNotEligibleRedirectFromServiceWorker
+	case PrefetchStatusPrefetchNotEligibleRedirectToServiceWorker:
+		*t = PrefetchStatusPrefetchNotEligibleRedirectToServiceWorker
 	case PrefetchStatusPrefetchNotEligibleBatterySaverEnabled:
 		*t = PrefetchStatusPrefetchNotEligibleBatterySaverEnabled
 	case PrefetchStatusPrefetchNotEligiblePreloadingDisabled:

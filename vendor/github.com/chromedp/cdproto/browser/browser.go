@@ -15,15 +15,18 @@ import (
 	"github.com/chromedp/cdproto/target"
 )
 
-// SetPermissionParams set permission settings for given origin.
+// SetPermissionParams set permission settings for given embedding and
+// embedded origins.
 type SetPermissionParams struct {
 	Permission       *PermissionDescriptor `json:"permission"`                          // Descriptor of permission to override.
 	Setting          PermissionSetting     `json:"setting"`                             // Setting of the permission.
-	Origin           string                `json:"origin,omitempty,omitzero"`           // Origin the permission applies to, all origins if not specified.
+	Origin           string                `json:"origin,omitempty,omitzero"`           // Embedding origin the permission applies to, all origins if not specified.
+	EmbeddedOrigin   string                `json:"embeddedOrigin,omitempty,omitzero"`   // Embedded origin the permission applies to. It is ignored unless the embedding origin is present and valid. If the embedding origin is provided but the embedded origin isn't, the embedding origin is used as the embedded origin.
 	BrowserContextID cdp.BrowserContextID  `json:"browserContextId,omitempty,omitzero"` // Context to override. When omitted, default browser context is used.
 }
 
-// SetPermission set permission settings for given origin.
+// SetPermission set permission settings for given embedding and embedded
+// origins.
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/Browser#method-setPermission
 //
@@ -38,9 +41,19 @@ func SetPermission(permission *PermissionDescriptor, setting PermissionSetting) 
 	}
 }
 
-// WithOrigin origin the permission applies to, all origins if not specified.
+// WithOrigin embedding origin the permission applies to, all origins if not
+// specified.
 func (p SetPermissionParams) WithOrigin(origin string) *SetPermissionParams {
 	p.Origin = origin
+	return &p
+}
+
+// WithEmbeddedOrigin embedded origin the permission applies to. It is
+// ignored unless the embedding origin is present and valid. If the embedding
+// origin is provided but the embedded origin isn't, the embedding origin is
+// used as the embedded origin.
+func (p SetPermissionParams) WithEmbeddedOrigin(embeddedOrigin string) *SetPermissionParams {
+	p.EmbeddedOrigin = embeddedOrigin
 	return &p
 }
 
@@ -54,46 +67,6 @@ func (p SetPermissionParams) WithBrowserContextID(browserContextID cdp.BrowserCo
 // Do executes Browser.setPermission against the provided context.
 func (p *SetPermissionParams) Do(ctx context.Context) (err error) {
 	return cdp.Execute(ctx, CommandSetPermission, p, nil)
-}
-
-// GrantPermissionsParams grant specific permissions to the given origin and
-// reject all others.
-type GrantPermissionsParams struct {
-	Permissions      []PermissionType     `json:"permissions"`
-	Origin           string               `json:"origin,omitempty,omitzero"`           // Origin the permission applies to, all origins if not specified.
-	BrowserContextID cdp.BrowserContextID `json:"browserContextId,omitempty,omitzero"` // BrowserContext to override permissions. When omitted, default browser context is used.
-}
-
-// GrantPermissions grant specific permissions to the given origin and reject
-// all others.
-//
-// See: https://chromedevtools.github.io/devtools-protocol/tot/Browser#method-grantPermissions
-//
-// parameters:
-//
-//	permissions
-func GrantPermissions(permissions []PermissionType) *GrantPermissionsParams {
-	return &GrantPermissionsParams{
-		Permissions: permissions,
-	}
-}
-
-// WithOrigin origin the permission applies to, all origins if not specified.
-func (p GrantPermissionsParams) WithOrigin(origin string) *GrantPermissionsParams {
-	p.Origin = origin
-	return &p
-}
-
-// WithBrowserContextID browserContext to override permissions. When omitted,
-// default browser context is used.
-func (p GrantPermissionsParams) WithBrowserContextID(browserContextID cdp.BrowserContextID) *GrantPermissionsParams {
-	p.BrowserContextID = browserContextID
-	return &p
-}
-
-// Do executes Browser.grantPermissions against the provided context.
-func (p *GrantPermissionsParams) Do(ctx context.Context) (err error) {
-	return cdp.Execute(ctx, CommandGrantPermissions, p, nil)
 }
 
 // ResetPermissionsParams reset all permission management for all origins.
@@ -127,7 +100,7 @@ type SetDownloadBehaviorParams struct {
 	Behavior         SetDownloadBehaviorBehavior `json:"behavior"`                            // Whether to allow all or deny all download requests, or use default Chrome behavior if available (otherwise deny). |allowAndName| allows download and names files according to their download guids.
 	BrowserContextID cdp.BrowserContextID        `json:"browserContextId,omitempty,omitzero"` // BrowserContext to set download behavior. When omitted, default browser context is used.
 	DownloadPath     string                      `json:"downloadPath,omitempty,omitzero"`     // The default path to save downloaded files to. This is required if behavior is set to 'allow' or 'allowAndName'.
-	EventsEnabled    bool                        `json:"eventsEnabled,omitempty,omitzero"`    // Whether to emit download events (defaults to false).
+	EventsEnabled    bool                        `json:"eventsEnabled"`                       // Whether to emit download events (defaults to false).
 }
 
 // SetDownloadBehavior set the behavior when downloading a file.
@@ -139,7 +112,8 @@ type SetDownloadBehaviorParams struct {
 //	behavior - Whether to allow all or deny all download requests, or use default Chrome behavior if available (otherwise deny). |allowAndName| allows download and names files according to their download guids.
 func SetDownloadBehavior(behavior SetDownloadBehaviorBehavior) *SetDownloadBehaviorParams {
 	return &SetDownloadBehaviorParams{
-		Behavior: behavior,
+		Behavior:      behavior,
+		EventsEnabled: false,
 	}
 }
 
@@ -319,7 +293,7 @@ func (p *GetBrowserCommandLineParams) Do(ctx context.Context) (arguments []strin
 // GetHistogramsParams get Chrome histograms.
 type GetHistogramsParams struct {
 	Query string `json:"query,omitempty,omitzero"` // Requested substring in name. Only histograms which have query as a substring in their name are extracted. An empty or absent query returns all histograms.
-	Delta bool   `json:"delta,omitempty,omitzero"` // If true, retrieve delta since last delta call.
+	Delta bool   `json:"delta"`                    // If true, retrieve delta since last delta call.
 }
 
 // GetHistograms get Chrome histograms.
@@ -328,7 +302,9 @@ type GetHistogramsParams struct {
 //
 // parameters:
 func GetHistograms() *GetHistogramsParams {
-	return &GetHistogramsParams{}
+	return &GetHistogramsParams{
+		Delta: false,
+	}
 }
 
 // WithQuery requested substring in name. Only histograms which have query as
@@ -368,8 +344,8 @@ func (p *GetHistogramsParams) Do(ctx context.Context) (histograms []*Histogram, 
 
 // GetHistogramParams get a Chrome histogram by name.
 type GetHistogramParams struct {
-	Name  string `json:"name"`                     // Requested histogram name.
-	Delta bool   `json:"delta,omitempty,omitzero"` // If true, retrieve delta since last delta call.
+	Name  string `json:"name"`  // Requested histogram name.
+	Delta bool   `json:"delta"` // If true, retrieve delta since last delta call.
 }
 
 // GetHistogram get a Chrome histogram by name.
@@ -381,7 +357,8 @@ type GetHistogramParams struct {
 //	name - Requested histogram name.
 func GetHistogram(name string) *GetHistogramParams {
 	return &GetHistogramParams{
-		Name: name,
+		Name:  name,
+		Delta: false,
 	}
 }
 
@@ -523,6 +500,47 @@ func (p *SetWindowBoundsParams) Do(ctx context.Context) (err error) {
 	return cdp.Execute(ctx, CommandSetWindowBounds, p, nil)
 }
 
+// SetContentsSizeParams set size of the browser contents resizing browser
+// window as necessary.
+type SetContentsSizeParams struct {
+	WindowID WindowID `json:"windowId"`                  // Browser window id.
+	Width    int64    `json:"width,omitempty,omitzero"`  // The window contents width in DIP. Assumes current width if omitted. Must be specified if 'height' is omitted.
+	Height   int64    `json:"height,omitempty,omitzero"` // The window contents height in DIP. Assumes current height if omitted. Must be specified if 'width' is omitted.
+}
+
+// SetContentsSize set size of the browser contents resizing browser window
+// as necessary.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Browser#method-setContentsSize
+//
+// parameters:
+//
+//	windowID - Browser window id.
+func SetContentsSize(windowID WindowID) *SetContentsSizeParams {
+	return &SetContentsSizeParams{
+		WindowID: windowID,
+	}
+}
+
+// WithWidth the window contents width in DIP. Assumes current width if
+// omitted. Must be specified if 'height' is omitted.
+func (p SetContentsSizeParams) WithWidth(width int64) *SetContentsSizeParams {
+	p.Width = width
+	return &p
+}
+
+// WithHeight the window contents height in DIP. Assumes current height if
+// omitted. Must be specified if 'width' is omitted.
+func (p SetContentsSizeParams) WithHeight(height int64) *SetContentsSizeParams {
+	p.Height = height
+	return &p
+}
+
+// Do executes Browser.setContentsSize against the provided context.
+func (p *SetContentsSizeParams) Do(ctx context.Context) (err error) {
+	return cdp.Execute(ctx, CommandSetContentsSize, p, nil)
+}
+
 // SetDockTileParams set dock tile details, platform-specific.
 type SetDockTileParams struct {
 	BadgeLabel string `json:"badgeLabel,omitempty,omitzero"`
@@ -606,24 +624,68 @@ func (p *AddPrivacySandboxEnrollmentOverrideParams) Do(ctx context.Context) (err
 	return cdp.Execute(ctx, CommandAddPrivacySandboxEnrollmentOverride, p, nil)
 }
 
+// AddPrivacySandboxCoordinatorKeyConfigParams configures encryption keys
+// used with a given privacy sandbox API to talk to a trusted coordinator. Since
+// this is intended for test automation only, coordinatorOrigin must be a .test
+// domain. No existing coordinator configuration for the origin may exist.
+type AddPrivacySandboxCoordinatorKeyConfigParams struct {
+	API               PrivacySandboxAPI    `json:"api"`
+	CoordinatorOrigin string               `json:"coordinatorOrigin"`
+	KeyConfig         string               `json:"keyConfig"`
+	BrowserContextID  cdp.BrowserContextID `json:"browserContextId,omitempty,omitzero"` // BrowserContext to perform the action in. When omitted, default browser context is used.
+}
+
+// AddPrivacySandboxCoordinatorKeyConfig configures encryption keys used with
+// a given privacy sandbox API to talk to a trusted coordinator. Since this is
+// intended for test automation only, coordinatorOrigin must be a .test domain.
+// No existing coordinator configuration for the origin may exist.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Browser#method-addPrivacySandboxCoordinatorKeyConfig
+//
+// parameters:
+//
+//	api
+//	coordinatorOrigin
+//	keyConfig
+func AddPrivacySandboxCoordinatorKeyConfig(api PrivacySandboxAPI, coordinatorOrigin string, keyConfig string) *AddPrivacySandboxCoordinatorKeyConfigParams {
+	return &AddPrivacySandboxCoordinatorKeyConfigParams{
+		API:               api,
+		CoordinatorOrigin: coordinatorOrigin,
+		KeyConfig:         keyConfig,
+	}
+}
+
+// WithBrowserContextID browserContext to perform the action in. When
+// omitted, default browser context is used.
+func (p AddPrivacySandboxCoordinatorKeyConfigParams) WithBrowserContextID(browserContextID cdp.BrowserContextID) *AddPrivacySandboxCoordinatorKeyConfigParams {
+	p.BrowserContextID = browserContextID
+	return &p
+}
+
+// Do executes Browser.addPrivacySandboxCoordinatorKeyConfig against the provided context.
+func (p *AddPrivacySandboxCoordinatorKeyConfigParams) Do(ctx context.Context) (err error) {
+	return cdp.Execute(ctx, CommandAddPrivacySandboxCoordinatorKeyConfig, p, nil)
+}
+
 // Command names.
 const (
-	CommandSetPermission                       = "Browser.setPermission"
-	CommandGrantPermissions                    = "Browser.grantPermissions"
-	CommandResetPermissions                    = "Browser.resetPermissions"
-	CommandSetDownloadBehavior                 = "Browser.setDownloadBehavior"
-	CommandCancelDownload                      = "Browser.cancelDownload"
-	CommandClose                               = "Browser.close"
-	CommandCrash                               = "Browser.crash"
-	CommandCrashGPUProcess                     = "Browser.crashGpuProcess"
-	CommandGetVersion                          = "Browser.getVersion"
-	CommandGetBrowserCommandLine               = "Browser.getBrowserCommandLine"
-	CommandGetHistograms                       = "Browser.getHistograms"
-	CommandGetHistogram                        = "Browser.getHistogram"
-	CommandGetWindowBounds                     = "Browser.getWindowBounds"
-	CommandGetWindowForTarget                  = "Browser.getWindowForTarget"
-	CommandSetWindowBounds                     = "Browser.setWindowBounds"
-	CommandSetDockTile                         = "Browser.setDockTile"
-	CommandExecuteBrowserCommand               = "Browser.executeBrowserCommand"
-	CommandAddPrivacySandboxEnrollmentOverride = "Browser.addPrivacySandboxEnrollmentOverride"
+	CommandSetPermission                         = "Browser.setPermission"
+	CommandResetPermissions                      = "Browser.resetPermissions"
+	CommandSetDownloadBehavior                   = "Browser.setDownloadBehavior"
+	CommandCancelDownload                        = "Browser.cancelDownload"
+	CommandClose                                 = "Browser.close"
+	CommandCrash                                 = "Browser.crash"
+	CommandCrashGPUProcess                       = "Browser.crashGpuProcess"
+	CommandGetVersion                            = "Browser.getVersion"
+	CommandGetBrowserCommandLine                 = "Browser.getBrowserCommandLine"
+	CommandGetHistograms                         = "Browser.getHistograms"
+	CommandGetHistogram                          = "Browser.getHistogram"
+	CommandGetWindowBounds                       = "Browser.getWindowBounds"
+	CommandGetWindowForTarget                    = "Browser.getWindowForTarget"
+	CommandSetWindowBounds                       = "Browser.setWindowBounds"
+	CommandSetContentsSize                       = "Browser.setContentsSize"
+	CommandSetDockTile                           = "Browser.setDockTile"
+	CommandExecuteBrowserCommand                 = "Browser.executeBrowserCommand"
+	CommandAddPrivacySandboxEnrollmentOverride   = "Browser.addPrivacySandboxEnrollmentOverride"
+	CommandAddPrivacySandboxCoordinatorKeyConfig = "Browser.addPrivacySandboxCoordinatorKeyConfig"
 )

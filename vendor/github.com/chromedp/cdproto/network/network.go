@@ -164,21 +164,69 @@ func (p *DisableParams) Do(ctx context.Context) (err error) {
 	return cdp.Execute(ctx, CommandDisable, nil, nil)
 }
 
-// EmulateNetworkConditionsParams activates emulation of network conditions.
-type EmulateNetworkConditionsParams struct {
-	Offline            bool           `json:"offline"`                              // True to emulate internet disconnection.
-	Latency            float64        `json:"latency"`                              // Minimum latency from request sent to response headers received (ms).
-	DownloadThroughput float64        `json:"downloadThroughput"`                   // Maximal aggregated download throughput (bytes/sec). -1 disables download throttling.
-	UploadThroughput   float64        `json:"uploadThroughput"`                     // Maximal aggregated upload throughput (bytes/sec).  -1 disables upload throttling.
-	ConnectionType     ConnectionType `json:"connectionType,omitempty,omitzero"`    // Connection type if known.
-	PacketLoss         float64        `json:"packetLoss,omitempty,omitzero"`        // WebRTC packet loss (percent, 0-100). 0 disables packet loss emulation, 100 drops all the packets.
-	PacketQueueLength  int64          `json:"packetQueueLength,omitempty,omitzero"` // WebRTC packet queue length (packet). 0 removes any queue length limitations.
-	PacketReordering   bool           `json:"packetReordering,omitempty,omitzero"`  // WebRTC packetReordering feature.
+// EmulateNetworkConditionsByRuleParams activates emulation of network
+// conditions for individual requests using URL match patterns. Unlike the
+// deprecated Network.emulateNetworkConditions this method does not affect
+// navigator state. Use Network.overrideNetworkState to explicitly modify
+// navigator behavior.
+type EmulateNetworkConditionsByRuleParams struct {
+	Offline                  bool          `json:"offline"`                  // True to emulate internet disconnection.
+	MatchedNetworkConditions []*Conditions `json:"matchedNetworkConditions"` // Configure conditions for matching requests. If multiple entries match a request, the first entry wins.  Global conditions can be configured by leaving the urlPattern for the conditions empty. These global conditions are also applied for throttling of p2p connections.
 }
 
-// EmulateNetworkConditions activates emulation of network conditions.
+// EmulateNetworkConditionsByRule activates emulation of network conditions
+// for individual requests using URL match patterns. Unlike the deprecated
+// Network.emulateNetworkConditions this method does not affect navigator state.
+// Use Network.overrideNetworkState to explicitly modify navigator behavior.
 //
-// See: https://chromedevtools.github.io/devtools-protocol/tot/Network#method-emulateNetworkConditions
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Network#method-emulateNetworkConditionsByRule
+//
+// parameters:
+//
+//	offline - True to emulate internet disconnection.
+//	matchedNetworkConditions - Configure conditions for matching requests. If multiple entries match a request, the first entry wins.  Global conditions can be configured by leaving the urlPattern for the conditions empty. These global conditions are also applied for throttling of p2p connections.
+func EmulateNetworkConditionsByRule(offline bool, matchedNetworkConditions []*Conditions) *EmulateNetworkConditionsByRuleParams {
+	return &EmulateNetworkConditionsByRuleParams{
+		Offline:                  offline,
+		MatchedNetworkConditions: matchedNetworkConditions,
+	}
+}
+
+// EmulateNetworkConditionsByRuleReturns return values.
+type EmulateNetworkConditionsByRuleReturns struct {
+	RuleIDs []string `json:"ruleIds,omitempty,omitzero"` // An id for each entry in matchedNetworkConditions. The id will be included in the requestWillBeSentExtraInfo for requests affected by a rule.
+}
+
+// Do executes Network.emulateNetworkConditionsByRule against the provided context.
+//
+// returns:
+//
+//	ruleIDs - An id for each entry in matchedNetworkConditions. The id will be included in the requestWillBeSentExtraInfo for requests affected by a rule.
+func (p *EmulateNetworkConditionsByRuleParams) Do(ctx context.Context) (ruleIDs []string, err error) {
+	// execute
+	var res EmulateNetworkConditionsByRuleReturns
+	err = cdp.Execute(ctx, CommandEmulateNetworkConditionsByRule, p, &res)
+	if err != nil {
+		return nil, err
+	}
+
+	return res.RuleIDs, nil
+}
+
+// OverrideNetworkStateParams override the state of navigator.onLine and
+// navigator.connection.
+type OverrideNetworkStateParams struct {
+	Offline            bool           `json:"offline"`                           // True to emulate internet disconnection.
+	Latency            float64        `json:"latency"`                           // Minimum latency from request sent to response headers received (ms).
+	DownloadThroughput float64        `json:"downloadThroughput"`                // Maximal aggregated download throughput (bytes/sec). -1 disables download throttling.
+	UploadThroughput   float64        `json:"uploadThroughput"`                  // Maximal aggregated upload throughput (bytes/sec).  -1 disables upload throttling.
+	ConnectionType     ConnectionType `json:"connectionType,omitempty,omitzero"` // Connection type if known.
+}
+
+// OverrideNetworkState override the state of navigator.onLine and
+// navigator.connection.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Network#method-overrideNetworkState
 //
 // parameters:
 //
@@ -186,8 +234,8 @@ type EmulateNetworkConditionsParams struct {
 //	latency - Minimum latency from request sent to response headers received (ms).
 //	downloadThroughput - Maximal aggregated download throughput (bytes/sec). -1 disables download throttling.
 //	uploadThroughput - Maximal aggregated upload throughput (bytes/sec).  -1 disables upload throttling.
-func EmulateNetworkConditions(offline bool, latency float64, downloadThroughput float64, uploadThroughput float64) *EmulateNetworkConditionsParams {
-	return &EmulateNetworkConditionsParams{
+func OverrideNetworkState(offline bool, latency float64, downloadThroughput float64, uploadThroughput float64) *OverrideNetworkStateParams {
+	return &OverrideNetworkStateParams{
 		Offline:            offline,
 		Latency:            latency,
 		DownloadThroughput: downloadThroughput,
@@ -196,42 +244,24 @@ func EmulateNetworkConditions(offline bool, latency float64, downloadThroughput 
 }
 
 // WithConnectionType connection type if known.
-func (p EmulateNetworkConditionsParams) WithConnectionType(connectionType ConnectionType) *EmulateNetworkConditionsParams {
+func (p OverrideNetworkStateParams) WithConnectionType(connectionType ConnectionType) *OverrideNetworkStateParams {
 	p.ConnectionType = connectionType
 	return &p
 }
 
-// WithPacketLoss webRTC packet loss (percent, 0-100). 0 disables packet loss
-// emulation, 100 drops all the packets.
-func (p EmulateNetworkConditionsParams) WithPacketLoss(packetLoss float64) *EmulateNetworkConditionsParams {
-	p.PacketLoss = packetLoss
-	return &p
-}
-
-// WithPacketQueueLength webRTC packet queue length (packet). 0 removes any
-// queue length limitations.
-func (p EmulateNetworkConditionsParams) WithPacketQueueLength(packetQueueLength int64) *EmulateNetworkConditionsParams {
-	p.PacketQueueLength = packetQueueLength
-	return &p
-}
-
-// WithPacketReordering webRTC packetReordering feature.
-func (p EmulateNetworkConditionsParams) WithPacketReordering(packetReordering bool) *EmulateNetworkConditionsParams {
-	p.PacketReordering = packetReordering
-	return &p
-}
-
-// Do executes Network.emulateNetworkConditions against the provided context.
-func (p *EmulateNetworkConditionsParams) Do(ctx context.Context) (err error) {
-	return cdp.Execute(ctx, CommandEmulateNetworkConditions, p, nil)
+// Do executes Network.overrideNetworkState against the provided context.
+func (p *OverrideNetworkStateParams) Do(ctx context.Context) (err error) {
+	return cdp.Execute(ctx, CommandOverrideNetworkState, p, nil)
 }
 
 // EnableParams enables network tracking, network events will now be
 // delivered to the client.
 type EnableParams struct {
-	MaxTotalBufferSize    int64 `json:"maxTotalBufferSize,omitempty,omitzero"`    // Buffer size in bytes to use when preserving network payloads (XHRs, etc).
-	MaxResourceBufferSize int64 `json:"maxResourceBufferSize,omitempty,omitzero"` // Per-resource buffer size in bytes to use when preserving network payloads (XHRs, etc).
-	MaxPostDataSize       int64 `json:"maxPostDataSize,omitempty,omitzero"`       // Longest post body size (in bytes) that would be included in requestWillBeSent notification
+	MaxTotalBufferSize        int64 `json:"maxTotalBufferSize,omitempty,omitzero"`    // Buffer size in bytes to use when preserving network payloads (XHRs, etc). This is the maximum number of bytes that will be collected by this DevTools session.
+	MaxResourceBufferSize     int64 `json:"maxResourceBufferSize,omitempty,omitzero"` // Per-resource buffer size in bytes to use when preserving network payloads (XHRs, etc).
+	MaxPostDataSize           int64 `json:"maxPostDataSize,omitempty,omitzero"`       // Longest post body size (in bytes) that would be included in requestWillBeSent notification
+	ReportDirectSocketTraffic bool  `json:"reportDirectSocketTraffic"`                // Whether DirectSocket chunk send/receive events should be reported.
+	EnableDurableMessages     bool  `json:"enableDurableMessages"`                    // Enable storing response bodies outside of renderer, so that these survive a cross-process navigation. Requires maxTotalBufferSize to be set. Currently defaults to false. This field is being deprecated in favor of the dedicated configureDurableMessages command, due to the possibility of deadlocks when awaiting Network.enable before issuing Runtime.runIfWaitingForDebugger.
 }
 
 // Enable enables network tracking, network events will now be delivered to
@@ -241,11 +271,15 @@ type EnableParams struct {
 //
 // parameters:
 func Enable() *EnableParams {
-	return &EnableParams{}
+	return &EnableParams{
+		ReportDirectSocketTraffic: false,
+		EnableDurableMessages:     false,
+	}
 }
 
 // WithMaxTotalBufferSize buffer size in bytes to use when preserving network
-// payloads (XHRs, etc).
+// payloads (XHRs, etc). This is the maximum number of bytes that will be
+// collected by this DevTools session.
 func (p EnableParams) WithMaxTotalBufferSize(maxTotalBufferSize int64) *EnableParams {
 	p.MaxTotalBufferSize = maxTotalBufferSize
 	return &p
@@ -265,9 +299,65 @@ func (p EnableParams) WithMaxPostDataSize(maxPostDataSize int64) *EnableParams {
 	return &p
 }
 
+// WithReportDirectSocketTraffic whether DirectSocket chunk send/receive
+// events should be reported.
+func (p EnableParams) WithReportDirectSocketTraffic(reportDirectSocketTraffic bool) *EnableParams {
+	p.ReportDirectSocketTraffic = reportDirectSocketTraffic
+	return &p
+}
+
+// WithEnableDurableMessages enable storing response bodies outside of
+// renderer, so that these survive a cross-process navigation. Requires
+// maxTotalBufferSize to be set. Currently defaults to false. This field is
+// being deprecated in favor of the dedicated configureDurableMessages command,
+// due to the possibility of deadlocks when awaiting Network.enable before
+// issuing Runtime.runIfWaitingForDebugger.
+func (p EnableParams) WithEnableDurableMessages(enableDurableMessages bool) *EnableParams {
+	p.EnableDurableMessages = enableDurableMessages
+	return &p
+}
+
 // Do executes Network.enable against the provided context.
 func (p *EnableParams) Do(ctx context.Context) (err error) {
 	return cdp.Execute(ctx, CommandEnable, p, nil)
+}
+
+// ConfigureDurableMessagesParams configures storing response bodies outside
+// of renderer, so that these survive a cross-process navigation. If
+// maxTotalBufferSize is not set, durable messages are disabled.
+type ConfigureDurableMessagesParams struct {
+	MaxTotalBufferSize    int64 `json:"maxTotalBufferSize,omitempty,omitzero"`    // Buffer size in bytes to use when preserving network payloads (XHRs, etc).
+	MaxResourceBufferSize int64 `json:"maxResourceBufferSize,omitempty,omitzero"` // Per-resource buffer size in bytes to use when preserving network payloads (XHRs, etc).
+}
+
+// ConfigureDurableMessages configures storing response bodies outside of
+// renderer, so that these survive a cross-process navigation. If
+// maxTotalBufferSize is not set, durable messages are disabled.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Network#method-configureDurableMessages
+//
+// parameters:
+func ConfigureDurableMessages() *ConfigureDurableMessagesParams {
+	return &ConfigureDurableMessagesParams{}
+}
+
+// WithMaxTotalBufferSize buffer size in bytes to use when preserving network
+// payloads (XHRs, etc).
+func (p ConfigureDurableMessagesParams) WithMaxTotalBufferSize(maxTotalBufferSize int64) *ConfigureDurableMessagesParams {
+	p.MaxTotalBufferSize = maxTotalBufferSize
+	return &p
+}
+
+// WithMaxResourceBufferSize per-resource buffer size in bytes to use when
+// preserving network payloads (XHRs, etc).
+func (p ConfigureDurableMessagesParams) WithMaxResourceBufferSize(maxResourceBufferSize int64) *ConfigureDurableMessagesParams {
+	p.MaxResourceBufferSize = maxResourceBufferSize
+	return &p
+}
+
+// Do executes Network.configureDurableMessages against the provided context.
+func (p *ConfigureDurableMessagesParams) Do(ctx context.Context) (err error) {
+	return cdp.Execute(ctx, CommandConfigureDurableMessages, p, nil)
 }
 
 // GetCertificateParams returns the DER-encoded certificate.
@@ -376,8 +466,8 @@ func GetResponseBody(requestID RequestID) *GetResponseBodyParams {
 
 // GetResponseBodyReturns return values.
 type GetResponseBodyReturns struct {
-	Body          string `json:"body,omitempty,omitzero"`          // Response body.
-	Base64encoded bool   `json:"base64Encoded,omitempty,omitzero"` // True, if content was sent as base64.
+	Body          string `json:"body,omitempty,omitzero"` // Response body.
+	Base64encoded bool   `json:"base64Encoded"`           // True, if content was sent as base64.
 }
 
 // Do executes Network.getResponseBody against the provided context.
@@ -428,7 +518,8 @@ func GetRequestPostData(requestID RequestID) *GetRequestPostDataParams {
 
 // GetRequestPostDataReturns return values.
 type GetRequestPostDataReturns struct {
-	PostData string `json:"postData,omitempty,omitzero"` // Request body string, omitting files from multipart requests
+	PostData      string `json:"postData,omitempty,omitzero"` // Request body string, omitting files from multipart requests
+	Base64encoded bool   `json:"base64Encoded"`               // True, if content was sent as base64.
 }
 
 // Do executes Network.getRequestPostData against the provided context.
@@ -436,15 +527,25 @@ type GetRequestPostDataReturns struct {
 // returns:
 //
 //	postData - Request body string, omitting files from multipart requests
-func (p *GetRequestPostDataParams) Do(ctx context.Context) (postData string, err error) {
+func (p *GetRequestPostDataParams) Do(ctx context.Context) (postData []byte, err error) {
 	// execute
 	var res GetRequestPostDataReturns
 	err = cdp.Execute(ctx, CommandGetRequestPostData, p, &res)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	return res.PostData, nil
+	// decode
+	var dec []byte
+	if res.Base64encoded {
+		dec, err = base64.StdEncoding.DecodeString(res.PostData)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		dec = []byte(res.PostData)
+	}
+	return dec, nil
 }
 
 // GetResponseBodyForInterceptionParams returns content served for the given
@@ -469,8 +570,8 @@ func GetResponseBodyForInterception(interceptionID InterceptionID) *GetResponseB
 
 // GetResponseBodyForInterceptionReturns return values.
 type GetResponseBodyForInterceptionReturns struct {
-	Body          string `json:"body,omitempty,omitzero"`          // Response body.
-	Base64encoded bool   `json:"base64Encoded,omitempty,omitzero"` // True, if content was sent as base64.
+	Body          string `json:"body,omitempty,omitzero"` // Response body.
+	Base64encoded bool   `json:"base64Encoded"`           // True, if content was sent as base64.
 }
 
 // Do executes Network.getResponseBodyForInterception against the provided context.
@@ -577,10 +678,10 @@ func (p *ReplayXHRParams) Do(ctx context.Context) (err error) {
 
 // SearchInResponseBodyParams searches for given string in response content.
 type SearchInResponseBodyParams struct {
-	RequestID     RequestID `json:"requestId"`                        // Identifier of the network response to search.
-	Query         string    `json:"query"`                            // String to search for.
-	CaseSensitive bool      `json:"caseSensitive,omitempty,omitzero"` // If true, search is case sensitive.
-	IsRegex       bool      `json:"isRegex,omitempty,omitzero"`       // If true, treats string parameter as regex.
+	RequestID     RequestID `json:"requestId"`     // Identifier of the network response to search.
+	Query         string    `json:"query"`         // String to search for.
+	CaseSensitive bool      `json:"caseSensitive"` // If true, search is case sensitive.
+	IsRegex       bool      `json:"isRegex"`       // If true, treats string parameter as regex.
 }
 
 // SearchInResponseBody searches for given string in response content.
@@ -593,8 +694,10 @@ type SearchInResponseBodyParams struct {
 //	query - String to search for.
 func SearchInResponseBody(requestID RequestID, query string) *SearchInResponseBodyParams {
 	return &SearchInResponseBodyParams{
-		RequestID: requestID,
-		Query:     query,
+		RequestID:     requestID,
+		Query:         query,
+		CaseSensitive: false,
+		IsRegex:       false,
 	}
 }
 
@@ -633,7 +736,7 @@ func (p *SearchInResponseBodyParams) Do(ctx context.Context) (result []*debugger
 
 // SetBlockedURLsParams blocks URLs from loading.
 type SetBlockedURLsParams struct {
-	URLs []string `json:"urls"` // URL patterns to block. Wildcards ('*') are allowed.
+	URLPatterns []*BlockPattern `json:"urlPatterns,omitempty,omitzero"` // Patterns to match in the order in which they are given. These patterns also take precedence over any wildcard patterns defined in urls.
 }
 
 // SetBlockedURLs blocks URLs from loading.
@@ -641,12 +744,16 @@ type SetBlockedURLsParams struct {
 // See: https://chromedevtools.github.io/devtools-protocol/tot/Network#method-setBlockedURLs
 //
 // parameters:
-//
-//	urls - URL patterns to block. Wildcards ('*') are allowed.
-func SetBlockedURLs(urls []string) *SetBlockedURLsParams {
-	return &SetBlockedURLsParams{
-		URLs: urls,
-	}
+func SetBlockedURLs() *SetBlockedURLsParams {
+	return &SetBlockedURLsParams{}
+}
+
+// WithURLPatterns patterns to match in the order in which they are given.
+// These patterns also take precedence over any wildcard patterns defined in
+// urls.
+func (p SetBlockedURLsParams) WithURLPatterns(urlPatterns []*BlockPattern) *SetBlockedURLsParams {
+	p.URLPatterns = urlPatterns
+	return &p
 }
 
 // Do executes Network.setBlockedURLs against the provided context.
@@ -712,12 +819,11 @@ type SetCookieParams struct {
 	URL          string              `json:"url,omitempty,omitzero"`          // The request-URI to associate with the setting of the cookie. This value can affect the default domain, path, source port, and source scheme values of the created cookie.
 	Domain       string              `json:"domain,omitempty,omitzero"`       // Cookie domain.
 	Path         string              `json:"path,omitempty,omitzero"`         // Cookie path.
-	Secure       bool                `json:"secure,omitempty,omitzero"`       // True if cookie is secure.
-	HTTPOnly     bool                `json:"httpOnly,omitempty,omitzero"`     // True if cookie is http-only.
+	Secure       bool                `json:"secure"`                          // True if cookie is secure.
+	HTTPOnly     bool                `json:"httpOnly"`                        // True if cookie is http-only.
 	SameSite     CookieSameSite      `json:"sameSite,omitempty,omitzero"`     // Cookie SameSite type.
 	Expires      *cdp.TimeSinceEpoch `json:"expires,omitempty,omitzero"`      // Cookie expiration date, session cookie if not set
 	Priority     CookiePriority      `json:"priority,omitempty,omitzero"`     // Cookie Priority type.
-	SameParty    bool                `json:"sameParty,omitempty,omitzero"`    // True if cookie is SameParty.
 	SourceScheme CookieSourceScheme  `json:"sourceScheme,omitempty,omitzero"` // Cookie source scheme type.
 	SourcePort   int64               `json:"sourcePort,omitempty,omitzero"`   // Cookie source port. Valid values are {-1, [1, 65535]}, -1 indicates an unspecified port. An unspecified port value allows protocol clients to emulate legacy cookie scope for the port. This is a temporary ability and it will be removed in the future.
 	PartitionKey *CookiePartitionKey `json:"partitionKey,omitempty,omitzero"` // Cookie partition key. If not set, the cookie will be set as not partitioned.
@@ -734,8 +840,10 @@ type SetCookieParams struct {
 //	value - Cookie value.
 func SetCookie(name string, value string) *SetCookieParams {
 	return &SetCookieParams{
-		Name:  name,
-		Value: value,
+		Name:     name,
+		Value:    value,
+		Secure:   false,
+		HTTPOnly: false,
 	}
 }
 
@@ -786,12 +894,6 @@ func (p SetCookieParams) WithExpires(expires *cdp.TimeSinceEpoch) *SetCookiePara
 // WithPriority cookie Priority type.
 func (p SetCookieParams) WithPriority(priority CookiePriority) *SetCookieParams {
 	p.Priority = priority
-	return &p
-}
-
-// WithSameParty true if cookie is SameParty.
-func (p SetCookieParams) WithSameParty(sameParty bool) *SetCookieParams {
-	p.SameParty = sameParty
 	return &p
 }
 
@@ -1015,6 +1117,70 @@ func (p *EnableReportingAPIParams) Do(ctx context.Context) (err error) {
 	return cdp.Execute(ctx, CommandEnableReportingAPI, p, nil)
 }
 
+// EnableDeviceBoundSessionsParams sets up tracking device bound sessions and
+// fetching of initial set of sessions.
+type EnableDeviceBoundSessionsParams struct {
+	Enable bool `json:"enable"` // Whether to enable or disable events.
+}
+
+// EnableDeviceBoundSessions sets up tracking device bound sessions and
+// fetching of initial set of sessions.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Network#method-enableDeviceBoundSessions
+//
+// parameters:
+//
+//	enable - Whether to enable or disable events.
+func EnableDeviceBoundSessions(enable bool) *EnableDeviceBoundSessionsParams {
+	return &EnableDeviceBoundSessionsParams{
+		Enable: enable,
+	}
+}
+
+// Do executes Network.enableDeviceBoundSessions against the provided context.
+func (p *EnableDeviceBoundSessionsParams) Do(ctx context.Context) (err error) {
+	return cdp.Execute(ctx, CommandEnableDeviceBoundSessions, p, nil)
+}
+
+// FetchSchemefulSiteParams fetches the schemeful site for a specific origin.
+type FetchSchemefulSiteParams struct {
+	Origin string `json:"origin"` // The URL origin.
+}
+
+// FetchSchemefulSite fetches the schemeful site for a specific origin.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Network#method-fetchSchemefulSite
+//
+// parameters:
+//
+//	origin - The URL origin.
+func FetchSchemefulSite(origin string) *FetchSchemefulSiteParams {
+	return &FetchSchemefulSiteParams{
+		Origin: origin,
+	}
+}
+
+// FetchSchemefulSiteReturns return values.
+type FetchSchemefulSiteReturns struct {
+	SchemefulSite string `json:"schemefulSite,omitempty,omitzero"` // The corresponding schemeful site.
+}
+
+// Do executes Network.fetchSchemefulSite against the provided context.
+//
+// returns:
+//
+//	schemefulSite - The corresponding schemeful site.
+func (p *FetchSchemefulSiteParams) Do(ctx context.Context) (schemefulSite string, err error) {
+	// execute
+	var res FetchSchemefulSiteReturns
+	err = cdp.Execute(ctx, CommandFetchSchemefulSite, p, &res)
+	if err != nil {
+		return "", err
+	}
+
+	return res.SchemefulSite, nil
+}
+
 // LoadNetworkResourceParams fetches the resource and returns the content.
 type LoadNetworkResourceParams struct {
 	FrameID cdp.FrameID                 `json:"frameId,omitempty,omitzero"` // Frame id to get the resource for. Mandatory for frame targets, and should be omitted for worker targets.
@@ -1066,7 +1232,7 @@ func (p *LoadNetworkResourceParams) Do(ctx context.Context) (resource *LoadNetwo
 }
 
 // SetCookieControlsParams sets Controls for third-party cookie access Page
-// reload is required before the new cookie bahavior will be observed.
+// reload is required before the new cookie behavior will be observed.
 type SetCookieControlsParams struct {
 	EnableThirdPartyCookieRestriction bool `json:"enableThirdPartyCookieRestriction"` // Whether 3pc restriction is enabled.
 	DisableThirdPartyCookieMetadata   bool `json:"disableThirdPartyCookieMetadata"`   // Whether 3pc grace period exception should be enabled; false by default.
@@ -1074,7 +1240,7 @@ type SetCookieControlsParams struct {
 }
 
 // SetCookieControls sets Controls for third-party cookie access Page reload
-// is required before the new cookie bahavior will be observed.
+// is required before the new cookie behavior will be observed.
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/Network#method-setCookieControls
 //
@@ -1104,8 +1270,10 @@ const (
 	CommandClearBrowserCookies                     = "Network.clearBrowserCookies"
 	CommandDeleteCookies                           = "Network.deleteCookies"
 	CommandDisable                                 = "Network.disable"
-	CommandEmulateNetworkConditions                = "Network.emulateNetworkConditions"
+	CommandEmulateNetworkConditionsByRule          = "Network.emulateNetworkConditionsByRule"
+	CommandOverrideNetworkState                    = "Network.overrideNetworkState"
 	CommandEnable                                  = "Network.enable"
+	CommandConfigureDurableMessages                = "Network.configureDurableMessages"
 	CommandGetCertificate                          = "Network.getCertificate"
 	CommandGetCookies                              = "Network.getCookies"
 	CommandGetResponseBody                         = "Network.getResponseBody"
@@ -1124,6 +1292,8 @@ const (
 	CommandStreamResourceContent                   = "Network.streamResourceContent"
 	CommandGetSecurityIsolationStatus              = "Network.getSecurityIsolationStatus"
 	CommandEnableReportingAPI                      = "Network.enableReportingApi"
+	CommandEnableDeviceBoundSessions               = "Network.enableDeviceBoundSessions"
+	CommandFetchSchemefulSite                      = "Network.fetchSchemefulSite"
 	CommandLoadNetworkResource                     = "Network.loadNetworkResource"
 	CommandSetCookieControls                       = "Network.setCookieControls"
 )

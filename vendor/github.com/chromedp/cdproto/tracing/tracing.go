@@ -8,6 +8,7 @@ package tracing
 
 import (
 	"context"
+	"encoding/base64"
 
 	"github.com/chromedp/cdproto/cdp"
 )
@@ -58,6 +59,45 @@ func (p *GetCategoriesParams) Do(ctx context.Context) (categories []string, err 
 	return res.Categories, nil
 }
 
+// GetTrackEventDescriptorParams return a descriptor for all available
+// tracing categories.
+type GetTrackEventDescriptorParams struct{}
+
+// GetTrackEventDescriptor return a descriptor for all available tracing
+// categories.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Tracing#method-getTrackEventDescriptor
+func GetTrackEventDescriptor() *GetTrackEventDescriptorParams {
+	return &GetTrackEventDescriptorParams{}
+}
+
+// GetTrackEventDescriptorReturns return values.
+type GetTrackEventDescriptorReturns struct {
+	Descriptor string `json:"descriptor,omitempty,omitzero"` // Base64-encoded serialized perfetto.protos.TrackEventDescriptor protobuf message.
+}
+
+// Do executes Tracing.getTrackEventDescriptor against the provided context.
+//
+// returns:
+//
+//	descriptor - Base64-encoded serialized perfetto.protos.TrackEventDescriptor protobuf message.
+func (p *GetTrackEventDescriptorParams) Do(ctx context.Context) (descriptor []byte, err error) {
+	// execute
+	var res GetTrackEventDescriptorReturns
+	err = cdp.Execute(ctx, CommandGetTrackEventDescriptor, nil, &res)
+	if err != nil {
+		return nil, err
+	}
+
+	// decode
+	var dec []byte
+	dec, err = base64.StdEncoding.DecodeString(res.Descriptor)
+	if err != nil {
+		return nil, err
+	}
+	return dec, nil
+}
+
 // RecordClockSyncMarkerParams record a clock sync marker in the trace.
 type RecordClockSyncMarkerParams struct {
 	SyncID string `json:"syncId"` // The ID of this clock sync marker
@@ -83,7 +123,7 @@ func (p *RecordClockSyncMarkerParams) Do(ctx context.Context) (err error) {
 
 // RequestMemoryDumpParams request a global memory dump.
 type RequestMemoryDumpParams struct {
-	Deterministic bool                    `json:"deterministic,omitempty,omitzero"` // Enables more deterministic results by forcing garbage collection
+	Deterministic bool                    `json:"deterministic"`                    // Enables more deterministic results by forcing garbage collection
 	LevelOfDetail MemoryDumpLevelOfDetail `json:"levelOfDetail,omitempty,omitzero"` // Specifies level of details in memory dump. Defaults to "detailed".
 }
 
@@ -93,7 +133,9 @@ type RequestMemoryDumpParams struct {
 //
 // parameters:
 func RequestMemoryDump() *RequestMemoryDumpParams {
-	return &RequestMemoryDumpParams{}
+	return &RequestMemoryDumpParams{
+		Deterministic: false,
+	}
 }
 
 // WithDeterministic enables more deterministic results by forcing garbage
@@ -113,7 +155,7 @@ func (p RequestMemoryDumpParams) WithLevelOfDetail(levelOfDetail MemoryDumpLevel
 // RequestMemoryDumpReturns return values.
 type RequestMemoryDumpReturns struct {
 	DumpGUID string `json:"dumpGuid,omitempty,omitzero"` // GUID of the resulting global memory dump.
-	Success  bool   `json:"success,omitempty,omitzero"`  // True iff the global memory dump succeeded.
+	Success  bool   `json:"success"`                     // True iff the global memory dump succeeded.
 }
 
 // Do executes Tracing.requestMemoryDump against the provided context.
@@ -208,9 +250,10 @@ func (p *StartParams) Do(ctx context.Context) (err error) {
 
 // Command names.
 const (
-	CommandEnd                   = "Tracing.end"
-	CommandGetCategories         = "Tracing.getCategories"
-	CommandRecordClockSyncMarker = "Tracing.recordClockSyncMarker"
-	CommandRequestMemoryDump     = "Tracing.requestMemoryDump"
-	CommandStart                 = "Tracing.start"
+	CommandEnd                     = "Tracing.end"
+	CommandGetCategories           = "Tracing.getCategories"
+	CommandGetTrackEventDescriptor = "Tracing.getTrackEventDescriptor"
+	CommandRecordClockSyncMarker   = "Tracing.recordClockSyncMarker"
+	CommandRequestMemoryDump       = "Tracing.requestMemoryDump"
+	CommandStart                   = "Tracing.start"
 )

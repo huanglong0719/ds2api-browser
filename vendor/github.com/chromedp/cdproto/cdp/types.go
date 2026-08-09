@@ -134,6 +134,16 @@ func (t *BackendNodeID) UnmarshalJSON(buf []byte) error {
 	return nil
 }
 
+// StyleSheetID unique identifier for a CSS stylesheet.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/DOM#type-StyleSheetId
+type StyleSheetID string
+
+// String returns the StyleSheetID as string value.
+func (t StyleSheetID) String() string {
+	return string(t)
+}
+
 // BackendNode backend node with a friendly name.
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/DOM#type-BackendNode
@@ -155,42 +165,47 @@ func (t PseudoType) String() string {
 
 // PseudoType values.
 const (
-	PseudoTypeFirstLine               PseudoType = "first-line"
-	PseudoTypeFirstLetter             PseudoType = "first-letter"
-	PseudoTypeCheckmark               PseudoType = "checkmark"
-	PseudoTypeBefore                  PseudoType = "before"
-	PseudoTypeAfter                   PseudoType = "after"
-	PseudoTypePickerIcon              PseudoType = "picker-icon"
-	PseudoTypeMarker                  PseudoType = "marker"
-	PseudoTypeBackdrop                PseudoType = "backdrop"
-	PseudoTypeColumn                  PseudoType = "column"
-	PseudoTypeSelection               PseudoType = "selection"
-	PseudoTypeSearchText              PseudoType = "search-text"
-	PseudoTypeTargetText              PseudoType = "target-text"
-	PseudoTypeSpellingError           PseudoType = "spelling-error"
-	PseudoTypeGrammarError            PseudoType = "grammar-error"
-	PseudoTypeHighlight               PseudoType = "highlight"
-	PseudoTypeFirstLineInherited      PseudoType = "first-line-inherited"
-	PseudoTypeScrollMarker            PseudoType = "scroll-marker"
-	PseudoTypeScrollMarkerGroup       PseudoType = "scroll-marker-group"
-	PseudoTypeScrollButton            PseudoType = "scroll-button"
-	PseudoTypeScrollbar               PseudoType = "scrollbar"
-	PseudoTypeScrollbarThumb          PseudoType = "scrollbar-thumb"
-	PseudoTypeScrollbarButton         PseudoType = "scrollbar-button"
-	PseudoTypeScrollbarTrack          PseudoType = "scrollbar-track"
-	PseudoTypeScrollbarTrackPiece     PseudoType = "scrollbar-track-piece"
-	PseudoTypeScrollbarCorner         PseudoType = "scrollbar-corner"
-	PseudoTypeResizer                 PseudoType = "resizer"
-	PseudoTypeInputListButton         PseudoType = "input-list-button"
-	PseudoTypeViewTransition          PseudoType = "view-transition"
-	PseudoTypeViewTransitionGroup     PseudoType = "view-transition-group"
-	PseudoTypeViewTransitionImagePair PseudoType = "view-transition-image-pair"
-	PseudoTypeViewTransitionOld       PseudoType = "view-transition-old"
-	PseudoTypeViewTransitionNew       PseudoType = "view-transition-new"
-	PseudoTypePlaceholder             PseudoType = "placeholder"
-	PseudoTypeFileSelectorButton      PseudoType = "file-selector-button"
-	PseudoTypeDetailsContent          PseudoType = "details-content"
-	PseudoTypePicker                  PseudoType = "picker"
+	PseudoTypeFirstLine                   PseudoType = "first-line"
+	PseudoTypeFirstLetter                 PseudoType = "first-letter"
+	PseudoTypeCheckmark                   PseudoType = "checkmark"
+	PseudoTypeBefore                      PseudoType = "before"
+	PseudoTypeAfter                       PseudoType = "after"
+	PseudoTypeExpandIcon                  PseudoType = "expand-icon"
+	PseudoTypePickerIcon                  PseudoType = "picker-icon"
+	PseudoTypeInterestHint                PseudoType = "interest-hint"
+	PseudoTypeMarker                      PseudoType = "marker"
+	PseudoTypeBackdrop                    PseudoType = "backdrop"
+	PseudoTypeColumn                      PseudoType = "column"
+	PseudoTypeSelection                   PseudoType = "selection"
+	PseudoTypeSearchText                  PseudoType = "search-text"
+	PseudoTypeTargetText                  PseudoType = "target-text"
+	PseudoTypeSpellingError               PseudoType = "spelling-error"
+	PseudoTypeGrammarError                PseudoType = "grammar-error"
+	PseudoTypeHighlight                   PseudoType = "highlight"
+	PseudoTypeFirstLineInherited          PseudoType = "first-line-inherited"
+	PseudoTypeScrollMarker                PseudoType = "scroll-marker"
+	PseudoTypeScrollMarkerGroup           PseudoType = "scroll-marker-group"
+	PseudoTypeScrollButton                PseudoType = "scroll-button"
+	PseudoTypeScrollbar                   PseudoType = "scrollbar"
+	PseudoTypeScrollbarThumb              PseudoType = "scrollbar-thumb"
+	PseudoTypeScrollbarButton             PseudoType = "scrollbar-button"
+	PseudoTypeScrollbarTrack              PseudoType = "scrollbar-track"
+	PseudoTypeScrollbarTrackPiece         PseudoType = "scrollbar-track-piece"
+	PseudoTypeScrollbarCorner             PseudoType = "scrollbar-corner"
+	PseudoTypeResizer                     PseudoType = "resizer"
+	PseudoTypeInputListButton             PseudoType = "input-list-button"
+	PseudoTypeViewTransition              PseudoType = "view-transition"
+	PseudoTypeViewTransitionGroup         PseudoType = "view-transition-group"
+	PseudoTypeViewTransitionImagePair     PseudoType = "view-transition-image-pair"
+	PseudoTypeViewTransitionGroupChildren PseudoType = "view-transition-group-children"
+	PseudoTypeViewTransitionOld           PseudoType = "view-transition-old"
+	PseudoTypeViewTransitionNew           PseudoType = "view-transition-new"
+	PseudoTypePlaceholder                 PseudoType = "placeholder"
+	PseudoTypeFileSelectorButton          PseudoType = "file-selector-button"
+	PseudoTypeDetailsContent              PseudoType = "details-content"
+	PseudoTypePicker                      PseudoType = "picker"
+	PseudoTypePermissionIcon              PseudoType = "permission-icon"
+	PseudoTypeOverscrollAreaParent        PseudoType = "overscroll-area-parent"
 )
 
 // UnmarshalJSON satisfies [json.Unmarshaler].
@@ -209,8 +224,12 @@ func (t *PseudoType) UnmarshalJSON(buf []byte) error {
 		*t = PseudoTypeBefore
 	case PseudoTypeAfter:
 		*t = PseudoTypeAfter
+	case PseudoTypeExpandIcon:
+		*t = PseudoTypeExpandIcon
 	case PseudoTypePickerIcon:
 		*t = PseudoTypePickerIcon
+	case PseudoTypeInterestHint:
+		*t = PseudoTypeInterestHint
 	case PseudoTypeMarker:
 		*t = PseudoTypeMarker
 	case PseudoTypeBackdrop:
@@ -259,6 +278,8 @@ func (t *PseudoType) UnmarshalJSON(buf []byte) error {
 		*t = PseudoTypeViewTransitionGroup
 	case PseudoTypeViewTransitionImagePair:
 		*t = PseudoTypeViewTransitionImagePair
+	case PseudoTypeViewTransitionGroupChildren:
+		*t = PseudoTypeViewTransitionGroupChildren
 	case PseudoTypeViewTransitionOld:
 		*t = PseudoTypeViewTransitionOld
 	case PseudoTypeViewTransitionNew:
@@ -271,6 +292,10 @@ func (t *PseudoType) UnmarshalJSON(buf []byte) error {
 		*t = PseudoTypeDetailsContent
 	case PseudoTypePicker:
 		*t = PseudoTypePicker
+	case PseudoTypePermissionIcon:
+		*t = PseudoTypePermissionIcon
+	case PseudoTypeOverscrollAreaParent:
+		*t = PseudoTypeOverscrollAreaParent
 	default:
 		return fmt.Errorf("unknown PseudoType value: %v", s)
 	}
@@ -352,41 +377,44 @@ func (t *CompatibilityMode) UnmarshalJSON(buf []byte) error {
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/DOM#type-Node
 type Node struct {
-	NodeID            NodeID            `json:"nodeId"`                              // Node identifier that is passed into the rest of the DOM messages as the nodeId. Backend will only push node with given id once. It is aware of all requested nodes and will only fire DOM events for nodes known to the client.
-	ParentID          NodeID            `json:"parentId,omitempty,omitzero"`         // The id of the parent node if any.
-	BackendNodeID     BackendNodeID     `json:"backendNodeId"`                       // The BackendNodeId for this node.
-	NodeType          NodeType          `json:"nodeType"`                            // Node's nodeType.
-	NodeName          string            `json:"nodeName"`                            // Node's nodeName.
-	LocalName         string            `json:"localName"`                           // Node's localName.
-	NodeValue         string            `json:"nodeValue"`                           // Node's nodeValue.
-	ChildNodeCount    int64             `json:"childNodeCount,omitempty,omitzero"`   // Child count for Container nodes.
-	Children          []*Node           `json:"children,omitempty,omitzero"`         // Child nodes of this node when requested with children.
-	Attributes        []string          `json:"attributes,omitempty,omitzero"`       // Attributes of the Element node in the form of flat array [name1, value1, name2, value2].
-	DocumentURL       string            `json:"documentURL,omitempty,omitzero"`      // Document URL that Document or FrameOwner node points to.
-	BaseURL           string            `json:"baseURL,omitempty,omitzero"`          // Base URL that Document or FrameOwner node uses for URL completion.
-	PublicID          string            `json:"publicId,omitempty,omitzero"`         // DocumentType's publicId.
-	SystemID          string            `json:"systemId,omitempty,omitzero"`         // DocumentType's systemId.
-	InternalSubset    string            `json:"internalSubset,omitempty,omitzero"`   // DocumentType's internalSubset.
-	XMLVersion        string            `json:"xmlVersion,omitempty,omitzero"`       // Document's XML version in case of XML documents.
-	Name              string            `json:"name,omitempty,omitzero"`             // Attr's name.
-	Value             string            `json:"value,omitempty,omitzero"`            // Attr's value.
-	PseudoType        PseudoType        `json:"pseudoType,omitempty,omitzero"`       // Pseudo element type for this node.
-	PseudoIdentifier  string            `json:"pseudoIdentifier,omitempty,omitzero"` // Pseudo element identifier for this node. Only present if there is a valid pseudoType.
-	ShadowRootType    ShadowRootType    `json:"shadowRootType,omitempty,omitzero"`   // Shadow root type.
-	FrameID           FrameID           `json:"frameId,omitempty,omitzero"`          // Frame ID for frame owner elements.
-	ContentDocument   *Node             `json:"contentDocument,omitempty,omitzero"`  // Content document for frame owner elements.
-	ShadowRoots       []*Node           `json:"shadowRoots,omitempty,omitzero"`      // Shadow root list for given element host.
-	TemplateContent   *Node             `json:"templateContent,omitempty,omitzero"`  // Content document fragment for template elements.
-	PseudoElements    []*Node           `json:"pseudoElements,omitempty,omitzero"`   // Pseudo elements associated with this node.
-	DistributedNodes  []*BackendNode    `json:"distributedNodes,omitempty,omitzero"` // Distributed nodes for given insertion point.
-	IsSVG             bool              `json:"isSVG,omitempty,omitzero"`            // Whether the node is SVG.
-	CompatibilityMode CompatibilityMode `json:"compatibilityMode,omitempty,omitzero"`
-	AssignedSlot      *BackendNode      `json:"assignedSlot,omitempty,omitzero"`
-	IsScrollable      bool              `json:"isScrollable,omitempty,omitzero"`
-	Parent            *Node             `json:"-"` // Parent node.
-	Invalidated       chan struct{}     `json:"-"` // Invalidated channel.
-	State             NodeState         `json:"-"` // Node state.
-	sync.RWMutex      `json:"-"`        // Read write mutex.
+	NodeID                   NodeID            `json:"nodeId"`                              // Node identifier that is passed into the rest of the DOM messages as the nodeId. Backend will only push node with given id once. It is aware of all requested nodes and will only fire DOM events for nodes known to the client.
+	ParentID                 NodeID            `json:"parentId,omitempty,omitzero"`         // The id of the parent node if any.
+	BackendNodeID            BackendNodeID     `json:"backendNodeId"`                       // The BackendNodeId for this node.
+	NodeType                 NodeType          `json:"nodeType"`                            // Node's nodeType.
+	NodeName                 string            `json:"nodeName"`                            // Node's nodeName.
+	LocalName                string            `json:"localName"`                           // Node's localName.
+	NodeValue                string            `json:"nodeValue"`                           // Node's nodeValue.
+	ChildNodeCount           int64             `json:"childNodeCount,omitempty,omitzero"`   // Child count for Container nodes.
+	Children                 []*Node           `json:"children,omitempty,omitzero"`         // Child nodes of this node when requested with children.
+	Attributes               []string          `json:"attributes,omitempty,omitzero"`       // Attributes of the Element node in the form of flat array [name1, value1, name2, value2].
+	DocumentURL              string            `json:"documentURL,omitempty,omitzero"`      // Document URL that Document or FrameOwner node points to.
+	BaseURL                  string            `json:"baseURL,omitempty,omitzero"`          // Base URL that Document or FrameOwner node uses for URL completion.
+	PublicID                 string            `json:"publicId,omitempty,omitzero"`         // DocumentType's publicId.
+	SystemID                 string            `json:"systemId,omitempty,omitzero"`         // DocumentType's systemId.
+	InternalSubset           string            `json:"internalSubset,omitempty,omitzero"`   // DocumentType's internalSubset.
+	XMLVersion               string            `json:"xmlVersion,omitempty,omitzero"`       // Document's XML version in case of XML documents.
+	Name                     string            `json:"name,omitempty,omitzero"`             // Attr's name.
+	Value                    string            `json:"value,omitempty,omitzero"`            // Attr's value.
+	PseudoType               PseudoType        `json:"pseudoType,omitempty,omitzero"`       // Pseudo element type for this node.
+	PseudoIdentifier         string            `json:"pseudoIdentifier,omitempty,omitzero"` // Pseudo element identifier for this node. Only present if there is a valid pseudoType.
+	ShadowRootType           ShadowRootType    `json:"shadowRootType,omitempty,omitzero"`   // Shadow root type.
+	FrameID                  FrameID           `json:"frameId,omitempty,omitzero"`          // Frame ID for frame owner elements.
+	ContentDocument          *Node             `json:"contentDocument,omitempty,omitzero"`  // Content document for frame owner elements.
+	ShadowRoots              []*Node           `json:"shadowRoots,omitempty,omitzero"`      // Shadow root list for given element host.
+	TemplateContent          *Node             `json:"templateContent,omitempty,omitzero"`  // Content document fragment for template elements.
+	PseudoElements           []*Node           `json:"pseudoElements,omitempty,omitzero"`   // Pseudo elements associated with this node.
+	DistributedNodes         []*BackendNode    `json:"distributedNodes,omitempty,omitzero"` // Distributed nodes for given insertion point.
+	IsSVG                    bool              `json:"isSVG"`                               // Whether the node is SVG.
+	CompatibilityMode        CompatibilityMode `json:"compatibilityMode,omitempty,omitzero"`
+	AssignedSlot             *BackendNode      `json:"assignedSlot,omitempty,omitzero"`
+	IsScrollable             bool              `json:"isScrollable"`
+	AffectedByStartingStyles bool              `json:"affectedByStartingStyles"`
+	AdoptedStyleSheets       []StyleSheetID    `json:"adoptedStyleSheets,omitempty,omitzero"`
+	AdProvenance             *AdProvenance     `json:"adProvenance,omitempty,omitzero"`
+	Parent                   *Node             `json:"-"` // Parent node.
+	Invalidated              chan struct{}     `json:"-"` // Invalidated channel.
+	State                    NodeState         `json:"-"` // Node state.
+	sync.RWMutex             `json:"-"`        // Read write mutex.
 }
 
 // AttributeValue returns the named attribute for the node.
@@ -803,6 +831,40 @@ func (t *MonotonicTime) UnmarshalJSON(buf []byte) error {
 	}
 	*t = MonotonicTime(MonotonicTimeEpoch.Add(time.Duration(f * float64(time.Second))))
 	return nil
+}
+
+// AdScriptIdentifier identifies the script on the stack that caused a
+// resource or element to be labeled as an ad. For resources, this indicates the
+// context that triggered the fetch. For elements, this indicates the context
+// that caused the element to be appended to the DOM.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Network#type-AdScriptIdentifier
+type AdScriptIdentifier struct {
+	ScriptID   ScriptID         `json:"scriptId"`   // The script's V8 identifier.
+	DebuggerID UniqueDebuggerID `json:"debuggerId"` // V8's debugging ID for the v8::Context.
+	Name       string           `json:"name"`       // The script's url (or generated name based on id if inline script).
+}
+
+// AdAncestry encapsulates the script ancestry and the root script filter
+// list rule that caused the resource or element to be labeled as an ad.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Network#type-AdAncestry
+type AdAncestry struct {
+	AncestryChain            []*AdScriptIdentifier `json:"ancestryChain"`                               // A chain of AdScriptIdentifiers representing the ancestry of an ad script that led to the creation of a resource or element. The chain is ordered from the script itself (lowest level) up to its root ancestor that was flagged by a filter list.
+	RootScriptFilterlistRule string                `json:"rootScriptFilterlistRule,omitempty,omitzero"` // The filter list rule that caused the root (last) script in ancestryChain to be tagged as an ad.
+}
+
+// AdProvenance represents the provenance of an ad resource or element. Only
+// one of filterlistRule or adScriptAncestry can be set. If filterlistRule is
+// provided, the resource URL directly matches a filter list rule. If
+// adScriptAncestry is provided, an ad script initiated the resource fetch or
+// appended the element to the DOM. If neither is provided, the entity is known
+// to be an ad, but provenance tracking information is unavailable.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Network#type-AdProvenance
+type AdProvenance struct {
+	FilterlistRule   string      `json:"filterlistRule,omitempty,omitzero"`   // The filterlist rule that matched, if any.
+	AdScriptAncestry *AdAncestry `json:"adScriptAncestry,omitempty,omitzero"` // The script ancestry that created the ad, if any.
 }
 
 // TimeSinceEpochMilli special timestamp type for Response's responseTime
@@ -1277,3 +1339,23 @@ func (fs FrameState) String() string {
 
 // EmptyFrameID is the "non-existent" frame id.
 const EmptyFrameID = FrameID("")
+
+// ScriptID unique script identifier.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Runtime#type-ScriptId
+type ScriptID string
+
+// String returns the ScriptID as string value.
+func (t ScriptID) String() string {
+	return string(t)
+}
+
+// UniqueDebuggerID unique identifier of current debugger.
+//
+// See: https://chromedevtools.github.io/devtools-protocol/tot/Runtime#type-UniqueDebuggerId
+type UniqueDebuggerID string
+
+// String returns the UniqueDebuggerID as string value.
+func (t UniqueDebuggerID) String() string {
+	return string(t)
+}

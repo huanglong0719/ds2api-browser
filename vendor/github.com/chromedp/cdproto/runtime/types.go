@@ -8,18 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/go-json-experiment/json/jsontext"
 )
-
-// ScriptID unique script identifier.
-//
-// See: https://chromedevtools.github.io/devtools-protocol/tot/Runtime#type-ScriptId
-type ScriptID string
-
-// String returns the ScriptID as string value.
-func (t ScriptID) String() string {
-	return string(t)
-}
 
 // SerializationOptions represents options for serialization. Overrides
 // generatePreview and returnByValue.
@@ -121,16 +112,16 @@ type EntryPreview struct {
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/Runtime#type-PropertyDescriptor
 type PropertyDescriptor struct {
-	Name         string        `json:"name"`                         // Property name or symbol description.
-	Value        *RemoteObject `json:"value,omitempty,omitzero"`     // The value associated with the property.
-	Writable     bool          `json:"writable,omitempty,omitzero"`  // True if the value associated with the property may be changed (data descriptors only).
-	Get          *RemoteObject `json:"get,omitempty,omitzero"`       // A function which serves as a getter for the property, or undefined if there is no getter (accessor descriptors only).
-	Set          *RemoteObject `json:"set,omitempty,omitzero"`       // A function which serves as a setter for the property, or undefined if there is no setter (accessor descriptors only).
-	Configurable bool          `json:"configurable"`                 // True if the type of this property descriptor may be changed and if the property may be deleted from the corresponding object.
-	Enumerable   bool          `json:"enumerable"`                   // True if this property shows up during enumeration of the properties on the corresponding object.
-	WasThrown    bool          `json:"wasThrown,omitempty,omitzero"` // True if the result was thrown during the evaluation.
-	IsOwn        bool          `json:"isOwn,omitempty,omitzero"`     // True if the property is owned for the object.
-	Symbol       *RemoteObject `json:"symbol,omitempty,omitzero"`    // Property symbol object, if the property is of the symbol type.
+	Name         string        `json:"name"`                      // Property name or symbol description.
+	Value        *RemoteObject `json:"value,omitempty,omitzero"`  // The value associated with the property.
+	Writable     bool          `json:"writable"`                  // True if the value associated with the property may be changed (data descriptors only).
+	Get          *RemoteObject `json:"get,omitempty,omitzero"`    // A function which serves as a getter for the property, or undefined if there is no getter (accessor descriptors only).
+	Set          *RemoteObject `json:"set,omitempty,omitzero"`    // A function which serves as a setter for the property, or undefined if there is no setter (accessor descriptors only).
+	Configurable bool          `json:"configurable"`              // True if the type of this property descriptor may be changed and if the property may be deleted from the corresponding object.
+	Enumerable   bool          `json:"enumerable"`                // True if this property shows up during enumeration of the properties on the corresponding object.
+	WasThrown    bool          `json:"wasThrown"`                 // True if the result was thrown during the evaluation.
+	IsOwn        bool          `json:"isOwn"`                     // True if the property is owned for the object.
+	Symbol       *RemoteObject `json:"symbol,omitempty,omitzero"` // Property symbol object, if the property is of the symbol type.
 }
 
 // InternalPropertyDescriptor object internal property descriptor. This
@@ -193,7 +184,7 @@ type ExceptionDetails struct {
 	Text               string             `json:"text"`                                  // Exception text, which should be used together with exception object when available.
 	LineNumber         int64              `json:"lineNumber"`                            // Line number of the exception location (0-based).
 	ColumnNumber       int64              `json:"columnNumber"`                          // Column number of the exception location (0-based).
-	ScriptID           ScriptID           `json:"scriptId,omitempty,omitzero"`           // Script ID of the exception location.
+	ScriptID           cdp.ScriptID       `json:"scriptId,omitempty,omitzero"`           // Script ID of the exception location.
 	URL                string             `json:"url,omitempty,omitzero"`                // URL of the exception location, to be used when the script was not reported.
 	StackTrace         *StackTrace        `json:"stackTrace,omitempty,omitzero"`         // JavaScript stack trace if available.
 	Exception          *RemoteObject      `json:"exception,omitempty,omitzero"`          // Exception object if available.
@@ -253,11 +244,11 @@ func (t TimeDelta) Float64() float64 {
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/Runtime#type-CallFrame
 type CallFrame struct {
-	FunctionName string   `json:"functionName"` // JavaScript function name.
-	ScriptID     ScriptID `json:"scriptId"`     // JavaScript script id.
-	URL          string   `json:"url"`          // JavaScript script name or url.
-	LineNumber   int64    `json:"lineNumber"`   // JavaScript script line number (0-based).
-	ColumnNumber int64    `json:"columnNumber"` // JavaScript script column number (0-based).
+	FunctionName string       `json:"functionName"` // JavaScript function name.
+	ScriptID     cdp.ScriptID `json:"scriptId"`     // JavaScript script id.
+	URL          string       `json:"url"`          // JavaScript script name or url.
+	LineNumber   int64        `json:"lineNumber"`   // JavaScript script line number (0-based).
+	ColumnNumber int64        `json:"columnNumber"` // JavaScript script column number (0-based).
 }
 
 // StackTrace call frames for assertions or error messages.
@@ -270,24 +261,14 @@ type StackTrace struct {
 	ParentID    *StackTraceID `json:"parentId,omitempty,omitzero"`    // Asynchronous JavaScript stack trace that preceded this stack, if available.
 }
 
-// UniqueDebuggerID unique identifier of current debugger.
-//
-// See: https://chromedevtools.github.io/devtools-protocol/tot/Runtime#type-UniqueDebuggerId
-type UniqueDebuggerID string
-
-// String returns the UniqueDebuggerID as string value.
-func (t UniqueDebuggerID) String() string {
-	return string(t)
-}
-
 // StackTraceID if debuggerId is set stack trace comes from another debugger
 // and can be resolved there. This allows to track cross-debugger calls. See
 // Runtime.StackTrace and Debugger.paused for usages.
 //
 // See: https://chromedevtools.github.io/devtools-protocol/tot/Runtime#type-StackTraceId
 type StackTraceID struct {
-	ID         string           `json:"id"`
-	DebuggerID UniqueDebuggerID `json:"debuggerId,omitempty,omitzero"`
+	ID         string               `json:"id"`
+	DebuggerID cdp.UniqueDebuggerID `json:"debuggerId,omitempty,omitzero"`
 }
 
 // SerializationOptionsSerialization [no description].
@@ -509,6 +490,7 @@ const (
 	SubtypeDataview          Subtype = "dataview"
 	SubtypeWebassemblymemory Subtype = "webassemblymemory"
 	SubtypeWasmvalue         Subtype = "wasmvalue"
+	SubtypeTrustedtype       Subtype = "trustedtype"
 )
 
 // UnmarshalJSON satisfies [json.Unmarshaler].
@@ -555,6 +537,8 @@ func (t *Subtype) UnmarshalJSON(buf []byte) error {
 		*t = SubtypeWebassemblymemory
 	case SubtypeWasmvalue:
 		*t = SubtypeWasmvalue
+	case SubtypeTrustedtype:
+		*t = SubtypeTrustedtype
 	default:
 		return fmt.Errorf("unknown Subtype value: %v", s)
 	}
