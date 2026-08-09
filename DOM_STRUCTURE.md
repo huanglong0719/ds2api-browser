@@ -316,6 +316,7 @@ for (const kw of thinkingKeywords) {
 ### 输入框
 - 选择器：`textarea`
 - `disabled` 属性：**实测（2026-08-09）聊天页面任何时刻均为 `false`**——AI 思考/回复期间、服务器繁忙时都可正常输入。旧文档"服务器繁忙/有消息生成时为 true"的记录已被实测推翻，且 errorDetectJS 中基于 `ta.disabled` 的 `serverBusy:inputDisabled` 判断（死代码）已删除
+- **就绪信号（2026-08-09 页面稳定检测）**：页面销毁重建后（新对话/刷新/重启），React 是否完全接管输入区以 `textarea` 是否**渲染出 placeholder** 为判据（`!ta.placeholder` = 未就绪）。完整检测：textarea 可见（getBoundingClientRect 非 0）+ `document.readyState === 'complete'` + placeholder 已渲染，连续 3 次（200ms 间隔）均通过即视为稳定（`waitForPageStable`，超时 10s 只告警不中断）。**背景**：页面刚重建时 React 事件监听尚未挂载，此时直接输入长文本再按 Enter，事件到达输入框但不触发发送（2026-08-09 实测：新对话 20:03/20:37 两次失败均伴随 TARGET DESTROYED + interceptor 重新注入）
 
 ### 发送按钮
 - 选择器（实际探测 2026-08-08 确认）：`div.ds-button--primary`（`<div role="button">`，**不是** `button` 标签）
@@ -399,6 +400,7 @@ DIV.ds-notification-container.ds-theme.ds-notification-container--top-right
 
 ## 八、变更记录
 
+- **2026-08-09**：**新增页面稳定检测（`waitForPageStable`），统一应用到所有发送场景**。根因：新对话/刷新/重启后页面销毁重建（TARGET DESTROYED），React 事件监听尚未挂载，此时直接输入长文本再按 Enter 事件到达输入框但不触发发送（实测 20:03/20:37 两次失败均伴随 interceptor 重新注入）。修复：`injectInterceptor` 检测到拦截器丢失（= 页面刚重载）时，先等页面稳定（textarea 可见 + placeholder 已渲染 + 连续 3 次稳定）再注入拦截器。**检测只在页面重载时触发，连续对话（拦截器还在）自动跳过**，不浪费等待时间。覆盖所有发送路径：sendChat / prepareForRetry / NavigateHome 重试。实盘验证：新对话 → 连续对话 ×2 → 新对话 4 次请求全部一次发送成功（pressEnter cleared after 1 checks）。详见"五、其他页面元素 > 输入框"。
 - **2026-08-09**：**修复 Toast 系统提示漏检**。发现 errorDetectJS 扫不到右上角弹窗形式的"服务器繁忙"（2026-07-31 重构删除了 toast 扫描，文档误记"已修复"）。修复：toast 扫描加回并置于 messages 检查之前。CDP 实测验证通过。详见 4.5 节。
 - **2026-08-09**：探测确认 DeepSeek 现有 **快速/专家/识图** 三种模式（`DIV[role="radio"]`，文本重复两次，选中靠 `aria-checked="true"`）。程序仅支持快速/识图两种，专家模式未支持（列入待办）。确认对话进行中 radio 消失、JS click 对模式 radio 有效。同步修正文档与代码一致性：errorDetectJS 行号、diag_dom.go 已更新、拦截器变量补全。证据：CDP 直接探测 + 5 次识图模式真实请求测试。
 - **2026-08-07**：发现系统提示"服务器繁忙，请稍后重试"以 Toast 通知形式出现（`ds-notification-container`），不在 `ds-message` 区域。`errorDetectJS` 漏检根因确认：旧版有 toast 扫描但被简化删除。修复：新增步骤2 扫描 `[class*="toast"], [class*="notification"]` 元素，跳过长度>200 的内容避免误扫。证据：`diagDOMJS` 日志确认 `toastElements=2`；`chat.go.bak` 第89-101行有旧版实现。
