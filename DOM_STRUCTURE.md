@@ -362,12 +362,15 @@ for (const kw of thinkingKeywords) {
 | `window.__dsConvLimitHit` | 拦截器检测到对话上限 |
 | `window.__dsServerBusy` | 拦截器检测到服务器繁忙 |
 | `window.__dsDiagLog` | 诊断日志（检测到系统提示时自动写入） |
+| `window.__dsInjectDone` | 拦截器是否已注入（页面重载后丢失变 false，作为"页面是否刚重建"的检测依据，见 chat.go injectInterceptor） |
+| `window.__dsArticleBaseline` | 发送前的 ds-markdown（AI 回复正文）数量基线，用于判断是否有新回复（sendMessage/sendMessageOrUpload 时记录，sendMessageOrUpload 兜底时比较） |
+| `window.__dsCurrentFragmentType` | 当前 SSE 片段类型（'THINK'/'THINKING' 等），用于区分思考与正文内容 |
 | `window.__dsObserveActive` | DOM 观察器是否激活 |
 | `window.__dsObserveInterval` | DOM 观察器定时器 ID |
 
 ---
 
-## 六、Toast 通知元素（2026-08-07 发现）
+## 七、Toast 通知元素（2026-08-07 发现）
 
 ### 发现过程
 用户反馈"服务器繁忙，请稍后重试"系统提示在页面上可见但 `errorDetectJS` 未检测到。通过 `diagDOMJS` 日志确认页面存在 `ds-notification-container` Toast 通知容器（`toastElements=2`）。
@@ -388,17 +391,17 @@ DIV.ds-notification-container.ds-theme.ds-notification-container--top-right
 
 ---
 
-## 七、待探测/待验证项
+## 八、待探测/待验证项
 
-- [ ] 系统提示的 DOM 结构（需等实际复现）
-- [ ] 系统提示是否有兄弟按钮容器（推测没有）
-- [ ] 图片上传后的预览元素结构
-- [ ] 文件上传后的附件元素结构
+- [x] 系统提示的 DOM 结构（2026-07-31 已复现"消息发送过于频繁"，见"二、各类型消息详细结构 > 4. 系统提示"）
+- [x] 系统提示是否有兄弟按钮容器（2026-07-31 已确认：系统提示旁有复制/编辑 2 个操作按钮）
+- [ ] 图片上传后的预览元素结构（代码已用 `img[src*="blob:"]`/`img[src*="data:"]` 检测，具体 DOM 结构待探测记录）
+- [ ] 文件上传后的附件元素结构（代码用 `input[type="file"]` 上传，上传后的附件卡片 DOM 结构待探测记录）
 - [ ] 新对话按钮的精确选择器
 
 ---
 
-## 八、变更记录
+## 九、变更记录
 
 - **2026-08-09**：**新增页面稳定检测（`waitForPageStable`），统一应用到所有发送场景**。根因：新对话/刷新/重启后页面销毁重建（TARGET DESTROYED），React 事件监听尚未挂载，此时直接输入长文本再按 Enter 事件到达输入框但不触发发送（实测 20:03/20:37 两次失败均伴随 interceptor 重新注入）。修复：`injectInterceptor` 检测到拦截器丢失（= 页面刚重载）时，先等页面稳定（textarea 可见 + placeholder 已渲染 + 连续 3 次稳定）再注入拦截器。**检测只在页面重载时触发，连续对话（拦截器还在）自动跳过**，不浪费等待时间。覆盖所有发送路径：sendChat / prepareForRetry / NavigateHome 重试。实盘验证：新对话 → 连续对话 ×2 → 新对话 4 次请求全部一次发送成功（pressEnter cleared after 1 checks）。详见"五、其他页面元素 > 输入框"。
 - **2026-08-09**：**修复 Toast 系统提示漏检**。发现 errorDetectJS 扫不到右上角弹窗形式的"服务器繁忙"（2026-07-31 重构删除了 toast 扫描，文档误记"已修复"）。修复：toast 扫描加回并置于 messages 检查之前。CDP 实测验证通过。详见 4.5 节。
