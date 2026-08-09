@@ -25,6 +25,8 @@ const (
 	previewCheck     = 300 * time.Millisecond
 	// 上传后等待发送按钮恢复可用的超时上限（CDP 实测：12.3MB 文件约 1.9s、6MB 图片约 1.1s）
 	sendBtnReadyTimeout = 15 * time.Second
+	// 页面重载后等待 React 完全就绪的超时上限（新对话/刷新后页面刚重建，直接输入会输到"半新页面"）
+	pageStableTimeout = 10 * time.Second
 	modeSwitchDelay  = 800 * time.Millisecond
 	newConvDelay     = 1500 * time.Millisecond
 	pollInterval     = 300 * time.Millisecond
@@ -388,6 +390,11 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 			log.Printf("[chat] sendMessage failed: %v, navigating home and retrying once", err)
 			h.session.NavigateHome(ctx)
 			time.Sleep(2 * time.Second)
+			// [Fix 2026-08-09] NavigateHome 后页面销毁重建，拦截器丢失且 React 未就绪，
+			// 重新注入拦截器（内部会先等页面稳定），页面稳定检测覆盖此重试场景
+			if err := h.injectInterceptor(); err != nil {
+				return nil, fmt.Errorf("inject interceptor after navigate home: %w", err)
+			}
 			if err2 := h.switchMode(ctx, mode); err2 != nil {
 				return nil, fmt.Errorf("send message: %w", err)
 			}
@@ -934,6 +941,14 @@ func (h *ChatHandler) injectInterceptor() error {
 	}
 
 	if !injected {
+		// [Fix 2026-08-09] 页面刚重载过（拦截器丢失 = 页面销毁重建过），
+		// 先等新页面 React 完全就绪再注入拦截器并继续。原因：新对话/刷新/重启后页面刚重建，
+		// React 事件监听尚未挂载完成，此时直接输入长文本再按 Enter 会失效
+		// （实测：20:03/20:37 两次失败均伴随 TARGET DESTROYED + interceptor 重新注入）。
+		// 统一在此等待，覆盖所有调用 injectInterceptor 的场景（sendChat/prepareForRetry）。
+		if !h.waitForPageStable(pageStableTimeout) {
+			log.Printf("[chat] warn: page not stable within %v after reload, continuing anyway", pageStableTimeout)
+		}
 		err := chromedp.Run(h.session.Context(),
 			chromedp.Evaluate(InjectScript, nil),
 			chromedp.Evaluate(observeCaptureScript, nil),
@@ -981,6 +996,50 @@ func (h *ChatHandler) injectInterceptor() error {
 	return chromedp.Run(h.session.Context(),
 		chromedp.Evaluate(`window.__dsBrowserCapture=''; window.__dsBrowserThinking='';`, nil),
 	)
+}
+
+// waitForPageStable 页面销毁重建后，等待新页面 React 完全就绪（输入框可正常交互）。
+// 检测信号：textarea 可见 + placeholder 已渲染（React 已接管输入区）+ 连续多次稳定。
+// 超时返回 false，由调用方决定是否继续。
+// 背景（2026-08-09）：新对话/刷新后页面刚重建，直接输入长文本再按 Enter 会失效，
+// 因为 React 事件监听尚未挂载完成，DispatchKeyEvent 虽到达输入框但不触发发送。
+func (h *ChatHandler) waitForPageStable(timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	lastState := ""
+	stableCount := 0
+	for time.Now().Before(deadline) {
+		var state string
+		err := chromedp.Run(h.session.Context(),
+			chromedp.Evaluate(`(()=>{
+				const ta = document.querySelector('textarea');
+				if (!ta) return 'no_ta';
+				const r = ta.getBoundingClientRect();
+				if (r.width === 0 || r.height === 0) return 'hidden';
+				if (document.readyState !== 'complete') return 'loading';
+				if (!ta.placeholder) return 'no_ph';
+				return 'ready';
+			})()`, &state),
+		)
+		if err != nil {
+			lastState = "err"
+			stableCount = 0
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+		if state == "ready" && lastState == "ready" {
+			stableCount++
+			if stableCount >= 3 {
+				log.Println("[chat] page stable after reload (React ready)")
+				return true
+			}
+		} else {
+			stableCount = 0
+		}
+		lastState = state
+		time.Sleep(200 * time.Millisecond)
+	}
+	log.Printf("[chat] page stability check timed out after %v (last=%s)", timeout, lastState)
+	return false
 }
 
 // waitForOldStreamDone 等待旧 SSE 流完成（基于拦截器 done 标志和 capture 状态）
