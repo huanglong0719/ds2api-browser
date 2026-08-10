@@ -418,7 +418,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[api] new conversation (idle > 10min)")
 	} else if h.chatHandler.ShouldNewConversationByCount() {
 		shouldNewConv = true
-		log.Printf("[api] new conversation (msg count reached random threshold)")
+		log.Printf("[api] new conversation (cumulative chars reached random threshold)")
 	} else {
 		log.Printf("[api] continuous chat (reusing existing conversation, msgs=%d)", len(req.Messages))
 	}

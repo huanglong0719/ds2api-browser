@@ -51,6 +51,10 @@ const errorDetectJS = `
 	var thinkingKeywords = ['正在思考', '已思考', '正在阅读'];
 
 	if (window.__dsServerBusy) return 'serverBusy:interceptor';
+	// [Fix 2026-08-10] 漏检根因：拦截器已检测到"达到对话长度上限"并置位 __dsConvLimitHit，
+	// 但 errorDetectJS 只检查了 __dsServerBusy，漏掉 convLimit，导致系统提示出现了却检测不到，
+	// 请求在 waitForResponse 阶段干等 120 秒超时（实测 2026-08-10 11:53）。
+	if (window.__dsConvLimitHit) return 'convLimit:interceptor';
 
 	// [Fix 2026-08-09] 扫描 Toast/notification 形式的系统提示（"服务器繁忙"等可能以右上角弹窗出现，
 	// 不在 ds-message 消息链中，且服务器繁忙时页面可能连用户消息都不显示）。
@@ -243,8 +247,8 @@ func NewChatHandler(session *Session, timeoutSec int) *ChatHandler {
 		timeoutSec = 120
 	}
 	h := &ChatHandler{session: session, responseTimeout: time.Duration(timeoutSec) * time.Second}
-	// 随机生成30-60之间的阈值，避免固定间隔被检测
-	h.convMsgThreshold.Store(int64(30 + rand.Intn(31)))
+	// 随机生成60万-90万字符的阈值（约20-30条超长消息），避免固定间隔被检测
+	h.convMsgThreshold.Store(int64(600000 + rand.Intn(300001)))
 	return h
 }
 
@@ -463,8 +467,10 @@ func (h *ChatHandler) ShouldNewConversation() bool {
 	return time.Since(time.Unix(0, ns)) > 10*time.Minute
 }
 
-// ShouldNewConversationByCount 检查当前对话消息数是否达到随机阈值
-// 当对话连续发送30-60条消息后，随机触发新对话，避免固定间隔被检测
+// ShouldNewConversationByCount 检查当前对话累计字符数是否达到随机阈值
+// [Fix 2026-08-10] 由"消息条数30-60"改为"累计字符数60万-90万"：
+// 每条消息约3万字符，按条数30-60统计时会远滞后于服务器对话长度上限（实测约50条即触发），
+// 改为按字符数统计后约20-30条超长消息就会主动开新对话，从源头避免到达服务器上限
 func (h *ChatHandler) ShouldNewConversationByCount() bool {
 	count := h.convMsgCount.Load()
 	threshold := h.convMsgThreshold.Load()
@@ -1583,6 +1589,8 @@ func (h *ChatHandler) isTextareaStillFilled() bool {
 
 func (h *ChatHandler) waitForResponse(ctx context.Context, timeout time.Duration, question string) (content string, thinking string, convLimit bool, serverBusy bool, err error) {
 	deadline := time.Now().Add(timeout)
+	// [Fix 2026-08-10] 记录已打印过明文的短内容，内容变化才打印，避免同一短内容反复刷屏
+	seenShort := ""
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
@@ -1613,7 +1621,34 @@ func (h *ChatHandler) waitForResponse(ctx context.Context, timeout time.Duration
 				PTypes         map[string]int `json:"ptypes"`
 				UnknownSamples []string       `json:"unknownSamples"`
 			}
-			if json.Unmarshal([]byte(result), &r) == nil && r.C != "" && (r.D || r.DD) {
+			if json.Unmarshal([]byte(result), &r) != nil {
+				time.Sleep(pollInterval)
+				continue
+			}
+			// [Fix 2026-08-10] 拦截器检测到系统提示时立即返回，不依赖 r.D/r.DD。
+			// 场景：对话达到长度上限/服务器繁忙时，AI 不会回复，页面 DOM 永远不会判定完成，
+			// 旧逻辑（依赖 r.D||r.DD 才检查内容）会空等直到 120 秒超时，白白浪费等待时间。
+			// 拦截器已在 checkFlags 中设置 __dsConvLimitHit/__dsServerBusy，直接使用即可。
+			// 系统提示类型多样（对话上限/发送频繁/服务器繁忙等），不能仅凭字符数判断，
+			// 必须检查明文关键词；短内容限制仅为避免误扫正常 AI 回复（长文）。
+			shortC := len([]rune(r.C)) < 200 && r.C != ""
+			// [Fix 2026-08-10] 捕获到疑似系统提示的短内容时，记录明文到日志（内容变化才打），
+			// 便于确认系统提示的真实文本（此前日志只有字符数如"15 chars"，无法识别提示类型）
+			if shortC && r.C != seenShort {
+				seenShort = r.C
+				log.Printf("[chat] short capture (%d chars): %q", len([]rune(r.C)), r.C)
+			}
+			if r.Lim || (shortC && hasConvLimit(r.C)) {
+				log.Printf("[chat] convLimit detected: %q (c=%d chars, d=%v, dd=%v), returning early",
+					r.C, len([]rune(r.C)), r.D, r.DD)
+				return r.C, "", true, false, nil
+			}
+			if r.Busy || (shortC && hasServerBusy(r.C)) {
+				log.Printf("[chat] serverBusy detected: %q (c=%d chars, d=%v, dd=%v), returning early",
+					r.C, len([]rune(r.C)), r.D, r.DD)
+				return r.C, "", false, true, nil
+			}
+			if r.C != "" && (r.D || r.DD) {
 				log.Printf("[chat] captured: %d chars, thinking: %d chars (netDone=%v domDone=%v, convLimit=%v, serverBusy=%v, ptypes=%v)",
 					len([]rune(r.C)), len([]rune(r.T)), r.D, r.DD, r.Lim, r.Busy, r.PTypes)
 				if len(r.UnknownSamples) > 0 {
@@ -1934,11 +1969,11 @@ func isMarkdownSeparator(line string) bool {
 
 func (h *ChatHandler) NewConversation(ctx context.Context) error {
 	log.Println("[chat] starting new conversation")
-	// 重置对话计数，生成新的随机阈值（30-60）
+	// 重置对话累计字符数，生成新的随机阈值（60万-90万字符，约20-30条超长消息）
 	h.convMsgCount.Store(0)
-	threshold := int64(30 + rand.Intn(31))
+	threshold := int64(600000 + rand.Intn(300001))
 	h.convMsgThreshold.Store(threshold)
-	log.Printf("[chat] new conv threshold: %d", threshold)
+	log.Printf("[chat] new conv threshold: %d chars", threshold)
 
 	var found bool
 	err := chromedp.Run(h.session.Context(),
