@@ -311,6 +311,88 @@ func (s *Session) resetCtx() {
 	s.resetCtxLocked()
 }
 
+// AbortConnection 强制断开浏览器连接（取消 browserCtx/allocCtx）。
+// [Fix 2026-08-10] 用于 chromedp 命令挂起（页面被 Memory Saver 冻结导致 TCP 半死、
+// context 超时失效，实测卡 36 分钟）时解除阻塞——断开后卡住的命令立即返回错误。
+// 断开后下一次 Session.Context() 调用会检测到连接断开，自动重启浏览器恢复（登录态保留在 profile）。
+func (s *Session) AbortConnection() {
+	s.ctxMu.Lock()
+	defer s.ctxMu.Unlock()
+	if s.browserCancel != nil {
+		s.browserCancel()
+	}
+	if s.allocCancel != nil {
+		s.allocCancel()
+	}
+	s.browserCtx, s.browserCancel = nil, nil
+	s.allocCtx, s.allocCancel = nil, nil
+	log.Println("[session] browser connection aborted (hung command watchdog)")
+}
+
+// RebuildPage 在页面被 Chrome Memory Saver 卸载（渲染进程销毁、CDP 命令挂起）后重建 DeepSeek 页面。
+// 流程：新建标签页导航回 DeepSeek → 等待就绪 → 清理旧标签页。
+// 注意顺序：必须先建新标签页再关旧标签页——脚本只保留一个 DeepSeek 标签页，
+// 若先关闭旧标签页，浏览器就一个标签页都没有了，Chrome 进程会随之退出。
+// 与重启浏览器（restartBrowserLocked）不同：Chrome 进程还活着，只重建页面，登录态保留在 profile 中。
+// 调用方必须持有 h.mu（由 refreshPageLocked 触发，避免与 sendChat 冲突）。
+func (s *Session) RebuildPage() error {
+	s.ctxMu.Lock()
+	defer s.ctxMu.Unlock()
+
+	// 1. 断开旧浏览器上下文（只断开 CDP 连接，不关闭标签页）
+	if s.browserCancel != nil {
+		s.browserCancel()
+	}
+	if s.allocCancel != nil {
+		s.allocCancel()
+	}
+
+	// 2. 重建浏览器上下文：newBrowserCtx 传入空 targetID 会让 chromedp 自动创建新标签页，
+	//    此时浏览器仍保留旧标签页，进程不会退出
+	wsURL, err := s.getBrowserWSURL()
+	if err != nil {
+		return fmt.Errorf("rebuild: get WS URL: %w", err)
+	}
+	s.allocCtx, s.allocCancel = chromedp.NewRemoteAllocator(context.Background(), wsURL)
+	s.browserCtx, s.browserCancel = s.newBrowserCtx(s.allocCtx, "")
+	s.setWindowSize(900, 600)
+
+	// 3. 导航回 DeepSeek 首页（登录态保留在 profile，加载后仍处于登录状态）
+	navCtx, navCancel := context.WithTimeout(s.browserCtx, 15*time.Second)
+	defer navCancel()
+	if err := chromedp.Run(navCtx, chromedp.Navigate("https://chat.deepseek.com/")); err != nil {
+		return fmt.Errorf("rebuild: navigate DeepSeek: %w", err)
+	}
+
+	// 4. 等待聊天页面就绪（textarea 出现 = 加载完成 + 已登录）
+	taDeadline := time.Now().Add(20 * time.Second)
+	var taOK bool
+	for time.Now().Before(taDeadline) {
+		probeCtx, probeCancel := context.WithTimeout(s.browserCtx, 3*time.Second)
+		err := chromedp.Run(probeCtx, chromedp.Evaluate(`!!document.querySelector('textarea')`, &taOK))
+		probeCancel()
+		if err == nil && taOK {
+			log.Println("[session] rebuild: chat page ready (textarea found)")
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !taOK {
+		return fmt.Errorf("rebuild: chat page not ready after 20s (login may be invalid)")
+	}
+
+	// 5. 新标签页就绪后，清理旧标签页（此时浏览器至少还有一个新标签页，关闭旧页不会退出进程）
+	s.closeExtraTargets()
+
+	// 6. 重新检测并开启深度思考（新页面默认关闭）
+	toggleCtx, toggleCancel := context.WithTimeout(s.browserCtx, 15*time.Second)
+	defer toggleCancel()
+	s.checkToggleStatesLocked(toggleCtx)
+
+	log.Println("[session] DeepSeek page rebuilt successfully")
+	return nil
+}
+
 // diagnoseConnectionLoss 断链瞬间的诊断探针（2026-08-09 用户要求）：
 // 在检测到与浏览器连接断开、准备重启之前，记录当时的确定性状态，用于区分根因：
 //   - browserCtx 的取消原因（chromedp 层错误信息）

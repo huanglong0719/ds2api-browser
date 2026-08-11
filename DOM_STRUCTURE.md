@@ -2,7 +2,7 @@
 
 > 本文档记录通过 CDP/debug 端点实际探测到的页面元素结构，作为代码修改的依据。
 > 任何检测逻辑修改前，必须先核对本文档；新探测到的结构必须追加到本文档。
-> 最后更新：2026-08-09（模式切换部分：新增快速/专家/识图三种模式探测记录）
+> 最后更新：2026-08-10（新增 __dsConvLimitHit 拦截器检查；保活轻量唤醒 + 页面重建；新对话按字符数阈值）
 
 ## ⚠️ 顶线原则：本文档是"基线"，不是"答案"
 
@@ -239,6 +239,10 @@ const isSystemPrompt = !isUserMsg && !isAIReply;
 ### 3. 检测系统提示（只检查最后一个 ds-message）
 
 ```javascript
+// 拦截器标志位优先（2026-08-10 新增 __dsConvLimitHit）
+if (window.__dsServerBusy) return 'serverBusy:interceptor';
+if (window.__dsConvLimitHit) return 'convLimit:interceptor';
+
 const lastMsg = messages[messages.length - 1];
 const text = lastMsg.textContent || '';
 
@@ -403,6 +407,18 @@ DIV.ds-notification-container.ds-theme.ds-notification-container--top-right
 
 ## 九、变更记录
 
+- **2026-08-11**：**修复"对话长度上限"系统提示被当回复返回 + 主动新对话检查失效 + 新对话点击假成功**（完整链路修复，实盘验证通过）。
+  - **拦截器系统提示识别（injector.go）**：拦截器新增 `isSystemPrompt` 检测，SSE 流中出现"对话长度上限/服务器繁忙/消息频繁"等关键词时**置位 `__dsServerBusy`/`__dsConvLimitHit` 标志**，**不清空捕获内容**（用户确认：拦截到系统提示 = 当次不可能有回复，由 Go 层检测标志后判定失败并重试，捕获内容不会返回客户端，无需过滤）。此前版本曾尝试"命中关键词清空 capture"的过滤方案，实测不需要，已回退。
+  - **新对话后仍 convLimit 不再切账号（chat.go retryWithNewConversation）**：用户确认新对话（干净空对话）不可能触发"对话长度上限"，若新对话后仍检测到 convLimit，一定是脚本问题（新对话未真正开启 / 上次系统提示残留被误判），切换账号解决不了，直接返回明确错误，终止重试链。
+  - **主动新对话统计口径修正（chat.go convMsgCount）**：由"只累加回复字符数"（约 0.15 万/轮）改为"**提示词+思考+回复**"三者之和（约 1.2-3.4 万/轮）。根因：服务器"对话长度上限"按完整上下文（约 100 万字符）计算，旧统计口径到 60-90 万阈值需约 400 轮、远慢于服务器（约 29 轮即触发），主动检查永远追不上。修正后约 20-30 轮即达阈值，在服务器上限前主动开新对话。**实盘验证（2026-08-11 17:09）**：累计 819,803 字符 > 阈值 809,669 → 触发 `[api] new conversation (cumulative chars reached random threshold)` → `new conversation confirmed (empty chat)` → 统计清零（14,501）重新累计，全链路闭环正常。
+  - **新对话真实点击 + 验证空对话（chat.go NewConversation）**：由 JS `click()`（React 页面无效，点击后直接返回"成功"但实际没开）改为 `chromedp.MouseClickXY` 真实鼠标点击，并用 `waitForEmptyTextarea` 验证对话为空（ds-markdown==0）才算成功，失败依次尝试 Ctrl+J / NavigateHome。根因：新对话假成功导致重试发送仍在旧对话、再次触发"对话长度上限"（实测 13:43-13:56 共 28 次循环）。
+- **2026-08-10**：**修复系统提示漏检（`__dsConvLimitHit`）+ 保活从整页刷新改为轻量唤醒 + 页面重建机制**。
+  - errorDetectJS 新增拦截器 `__dsConvLimitHit` 标志位检查（第 60 行），在 `__dsServerBusy` 之后、Toast 扫描之前。根因：拦截器已设置 `__dsConvLimitHit` 但 errorDetectJS 只检查了 `__dsServerBusy`，导致"达到对话长度上限"系统提示出现后仍检测不到，请求干等 120 秒超时。
+  - `waitForResponse` 新增短内容早期返回：轮询中检查捕获内容 <200 字符且含 convLimit/serverBusy 关键词时立即返回，不依赖 r.D/r.DD（对话达到上限时 AI 不会回复，DOM 永远不会判定完成，旧逻辑会空等 120 秒超时）。
+  - 保活机制重构：`idleRefreshInterval` 从 30 分钟改为 12 分钟，`idleRefreshCheck` 从 5 分钟改为 3 分钟；`refreshPageLocked` 从整页导航重载改为轻量唤醒（`SetWebLifecycleState active` + `BringToFront`，3 秒超时，毫秒级不重载）。根因：30 分钟太久，Chrome Memory Saver 可能在此之前已卸载页面（渲染进程销毁），导航命令发给已卸载的标签页会永久挂起导致程序假死。
+  - 新增 `RebuildPage`（session.go）：唤醒失败时自动重建页面。流程：先建新标签页导航回 DeepSeek → 等待就绪 → 清理旧标签页。注意顺序：先建后关，避免唯一标签页关闭导致 Chrome 进程退出。
+  - `StartIdleRefresher` 和 `ensureReady` 中唤醒失败时自动触发 `RebuildPage` 重建。
+  - 新对话阈值从 30-60 条消息改为累计字符数 60-90 万（`ShouldNewConversationByCount` + `convMsgCount`/`convMsgThreshold`），从源头避免到达服务器对话长度上限。
 - **2026-08-09**：**新增页面稳定检测（`waitForPageStable`），统一应用到所有发送场景**。根因：新对话/刷新/重启后页面销毁重建（TARGET DESTROYED），React 事件监听尚未挂载，此时直接输入长文本再按 Enter 事件到达输入框但不触发发送（实测 20:03/20:37 两次失败均伴随 interceptor 重新注入）。修复：`injectInterceptor` 检测到拦截器丢失（= 页面刚重载）时，先等页面稳定（textarea 可见 + placeholder 已渲染 + 连续 3 次稳定）再注入拦截器。**检测只在页面重载时触发，连续对话（拦截器还在）自动跳过**，不浪费等待时间。覆盖所有发送路径：sendChat / prepareForRetry / NavigateHome 重试。实盘验证：新对话 → 连续对话 ×2 → 新对话 4 次请求全部一次发送成功（pressEnter cleared after 1 checks）。详见"五、其他页面元素 > 输入框"。
 - **2026-08-09**：**修复 Toast 系统提示漏检**。发现 errorDetectJS 扫不到右上角弹窗形式的"服务器繁忙"（2026-07-31 重构删除了 toast 扫描，文档误记"已修复"）。修复：toast 扫描加回并置于 messages 检查之前。CDP 实测验证通过。详见 4.5 节。
 - **2026-08-09**：探测确认 DeepSeek 现有 **快速/专家/识图** 三种模式（`DIV[role="radio"]`，文本重复两次，选中靠 `aria-checked="true"`）。程序仅支持快速/识图两种，专家模式未支持（列入待办）。确认对话进行中 radio 消失、JS click 对模式 radio 有效。同步修正文档与代码一致性：errorDetectJS 行号、diag_dom.go 已更新、拦截器变量补全。证据：CDP 直接探测 + 5 次识图模式真实请求测试。

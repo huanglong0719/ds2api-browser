@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/input"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 )
 
@@ -33,10 +34,12 @@ const (
 	maxTextChunk     = 3000
 	requestBodyLimit = 10 << 20
 
-	// 空闲保活刷新：距离上次请求超过该时长时刷新页面，唤醒可能休眠的 Chrome 渲染进程
-	idleRefreshInterval = 30 * time.Minute
-	// 后台保活刷新检查周期（StartIdleRefresher）
-	idleRefreshCheck = 5 * time.Minute
+	// 空闲保活：距离上次请求超过该时长时轻量唤醒页面（不重载），
+	// [Fix 2026-08-10] 30 分钟太久，Chrome Memory Saver 可能已在此之前卸载页面导致唤醒失败；
+	// 改为 12 分钟，跑在 Chrome 卸载判定之前
+	idleRefreshInterval = 12 * time.Minute
+	// 后台保活唤醒检查周期（StartIdleRefresher）
+	idleRefreshCheck = 3 * time.Minute
 )
 
 // errorDetectJS 统一的 DOM 错误检测 JS
@@ -48,7 +51,7 @@ const errorDetectJS = `
 	var limitKeywords = ['达到对话长度上限', '请开启新对话', '对话长度上限'];
 	// [Fix 2026-08-09] 含"正在阅读"：大文件发送后页面先显示"正在阅读"再"正在思考"，
 	// 识别"正在阅读"可让大文件请求立即进入等待回复，不用白等 3 秒检测窗口
-	var thinkingKeywords = ['正在思考', '已思考', '正在阅读'];
+	// 注：thinking 判定已改为显式关键词检查（"正在思考"/"正在阅读"进行中 + "已思考"完成态需本轮新回复），不再用数组
 
 	if (window.__dsServerBusy) return 'serverBusy:interceptor';
 	// [Fix 2026-08-10] 漏检根因：拦截器已检测到"达到对话长度上限"并置位 __dsConvLimitHit，
@@ -106,11 +109,19 @@ const errorDetectJS = `
 		}
 	}
 
-	// 检测 thinking
-	for (var t = 0; t < thinkingKeywords.length; t++) {
-		if (text.indexOf(thinkingKeywords[t]) !== -1) {
-			return 'thinking';
-		}
+	// 检测 thinking（早停信号）
+	// [Fix 2026-08-11] 区分"进行中"与"完成态"：页面销毁重建/请求失败时 lastMsg 可能是
+	// 上一轮旧回复（含"已思考"），此前一律判定 thinking 导致误判、系统提示漏检
+	// （实测 2026-08-11 14:06:38 TARGET DESTROYED 后 14:06:40 误判 thinking 提前退出，
+	// 实际请求失败、系统提示出现但未检测到，waitForResponse 干等超时）。
+	// - "正在思考"/"正在阅读"：进行中状态（思考时页面实时显示），可安全早停
+	// - "已思考"：完成态，旧回复也含此文字，仅当本轮有新回复（ds-markdown 数 > baseline）时才判定
+	if (text.indexOf('正在思考') !== -1 || text.indexOf('正在阅读') !== -1) {
+		return 'thinking';
+	}
+	var hasNewReply = document.querySelectorAll('[class*="ds-markdown"]').length > (window.__dsArticleBaseline || 0);
+	if (hasNewReply && text.indexOf('已思考') !== -1) {
+		return 'thinking';
 	}
 
 	return '';
@@ -451,9 +462,19 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 
 	log.Printf("[chat] got response: %d chars, thinking: %d chars", len([]rune(content)), len([]rune(thinking)))
 	// [账号质量管理] 主路径首次成功才计入会话统计；重试路径成功不计数（避免同一请求重复计数）
+	// [Fix 2026-08-11] 对话累计按"字符数"累加（此前误加 1 条/次，而阈值是 60-90 万字符，
+	// count 永远到不了 threshold，ShouldNewConversationByCount 永不触发、从不主动开新对话，
+	// 连续对话无限累加直到到达服务器对话长度上限）。
+	// [Fix 2026-08-11 用户确认] 服务器对话长度上限按"完整上下文"计算（提示词+思考+回复），
+	// 必须累加三者字符数之和（约 3.4 万/轮），主动检查才能真正反映服务器消耗、
+	// 在到达上限前主动开新对话。此前只累加回复字符数（约 0.15 万/轮）会慢 20 倍以上，
+	// 主动检查永远追不上服务器上限。
 	if content != "" {
 		h.session.sessionRequestCount++
-		h.convMsgCount.Add(1)
+		h.convMsgCount.Add(int64(len([]rune(text)) + len([]rune(thinking)) + len([]rune(content))))
+		// [诊断日志 2026-08-11] 验证主动新对话统计是否生效：每次成功回复后打印当前累计值
+		log.Printf("[chat][diag] convMsgCount now=%d chars (added text=%d think=%d content=%d, threshold=%d)",
+			h.convMsgCount.Load(), len([]rune(text)), len([]rune(thinking)), len([]rune(content)), h.convMsgThreshold.Load())
 	}
 	h.lastActivity.Store(time.Now().UnixNano())
 	return &ChatResponse{Content: content, Thinking: thinking}, nil
@@ -488,14 +509,19 @@ func (h *ChatHandler) ensureReady() error {
 	h.session.closeExtraTargets()
 
 	// 长时间空闲后（如收盘到复盘之间数小时），Chrome 渲染进程可能进入睡眠状态，
-	// 导致 chromedp.Evaluate 调用耗时极长甚至挂起。直接刷新页面唤醒渲染进程，
-	// 并带超时确认刷新成功，避免后续流程无限等待。
-	// 只在距离上次请求超过 30 分钟（且距离上次刷新超过 30 分钟）时才刷新，
-	// 避免频繁请求时产生额外开销。后台保活 goroutine（StartIdleRefresher）也会执行
-	// 同样的刷新，保证长时间无请求时页面保持活跃，请求到来时无需现场唤醒。
+	// 导致 chromedp.Evaluate 调用耗时极长甚至挂起。轻量唤醒页面（不重载），
+	// 并带超时确认唤醒成功，避免后续流程无限等待。
+	// 只在距离上次请求超过 idleRefreshInterval（且距离上次唤醒超过 idleRefreshInterval）
+	// 时才唤醒，避免频繁请求时产生额外开销。后台保活 goroutine（StartIdleRefresher）也会执行
+	// 同样的唤醒，保证长时间无请求时页面保持活跃，请求到来时无需现场唤醒。
 	if h.shouldRefreshPage() {
 		if err := h.refreshPageLocked(); err != nil {
-			return err
+			// [Fix 2026-08-10] 唤醒失败 = 页面被 Memory Saver 卸载，重建页面恢复服务
+			log.Printf("[chat] wake failed before send, rebuilding page: %v", err)
+			if rbErr := h.session.RebuildPage(); rbErr != nil {
+				return fmt.Errorf("rebuild page after wake failure: %w", rbErr)
+			}
+			h.lastRefresh.Store(time.Now().UnixNano())
 		}
 	}
 
@@ -540,33 +566,53 @@ func (h *ChatHandler) shouldRefreshPage() bool {
 // refreshPageLocked 执行空闲保活刷新：导航回 DeepSeek 首页唤醒渲染进程，
 // 并带超时确认页面恢复响应。调用方必须持有 h.mu（与 sendChat 互斥）。
 // 刷新成功后记录 lastRefresh，避免在 30 分钟内重复刷新。
+// refreshPageLocked 执行空闲保活：轻量唤醒页面，不重载。
+// [Fix 2026-08-10] 原实现为整页导航重载：30 分钟太久页面已被 Chrome Memory Saver 卸载
+// （渲染进程销毁），导航命令发给已卸载的标签页会永久挂起、锁被占死导致程序假死。
+// 改为短间隔轻量唤醒（setWebLifecycleState active + bringToFront，毫秒级），
+// 让 Chrome 始终认为页面活跃、永不触发卸载；若唤醒命令超时说明页面已死，返回错误触发重建。
+// 调用方必须持有 h.mu（与 sendChat 互斥）。
+// 唤醒成功后记录 lastRefresh，避免在 idleRefreshInterval 内重复唤醒。
 func (h *ChatHandler) refreshPageLocked() error {
-	log.Printf("[chat] idle > 30min, refreshing page")
-	h.session.NavigateHome(h.session.Context())
-	time.Sleep(2 * time.Second)
-
-	// 确认刷新后页面能正常响应
-	checkCtx, cancel := context.WithTimeout(h.session.Context(), 5*time.Second)
-	defer cancel()
-	var ok bool
-	if err := chromedp.Run(checkCtx, chromedp.Evaluate(`!!document.querySelector('textarea')`, &ok)); err != nil {
-		log.Printf("[chat] page still unresponsive after refresh: %v", err)
-		return fmt.Errorf("page unresponsive after idle: %w", err)
+	log.Printf("[chat] idle > %v, waking page (lightweight, no reload)", idleRefreshInterval)
+	wakeCtx, cancelWake := context.WithTimeout(h.session.Context(), 3*time.Second)
+	defer cancelWake()
+	// [Fix 2026-08-10] 看门狗：chromedp 的 3 秒超时在浏览器"半死"（页面被 Memory Saver 冻结、
+	// TCP 连接仍在）时可能失效（实测 22:33-23:09 卡 36 分钟），导致 h.mu 被无限期占用、
+	// 所有请求阻塞（"脚本自己死了"）。改为独立 goroutine 执行 + time.After 看门狗：
+	// 5 秒未完成即强制断开浏览器连接，让卡住的命令返回、锁立即释放；
+	// 后续请求通过 Session.Context() 检测到连接断开自动重启浏览器恢复。
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- chromedp.Run(wakeCtx,
+			page.SetWebLifecycleState(page.SetWebLifecycleStateStateActive),
+			page.BringToFront(),
+		)
+	}()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			log.Printf("[chat] idle wake failed (page unloaded by Memory Saver?): %v", err)
+			return fmt.Errorf("idle wake: %w", err)
+		}
+	case <-time.After(5 * time.Second):
+		// chromedp 超时失效，命令挂起：强制断开连接解除阻塞
+		log.Printf("[chat] idle wake HUNG for 5s, aborting browser connection")
+		h.session.AbortConnection()
+		return fmt.Errorf("idle wake: hung, connection aborted")
 	}
-	if !ok {
-		return fmt.Errorf("textarea not found after idle refresh")
-	}
-	log.Printf("[chat] page responsive after idle refresh")
-	// 页面刷新后 DeepSeek 默认关闭深度思考，需要重新检测并开启
+	log.Printf("[chat] page woken (lightweight, no reload)")
 	h.session.checkToggleStates()
 	h.lastRefresh.Store(time.Now().UnixNano())
 	return nil
 }
 
-// StartIdleRefresher 启动后台空闲保活刷新 goroutine。
-// 每 idleRefreshCheck 检查一次：距离上次请求超过 idleRefreshInterval 且距离上次刷新
-// 超过 idleRefreshInterval 时，主动刷新页面唤醒渲染进程——避免长时间无请求（如收盘到
-// 复盘之间数小时）导致页面进入休眠、请求突然到来时卡顿。
+// StartIdleRefresher 启动后台空闲保活唤醒 goroutine。
+// 每 idleRefreshCheck 检查一次：距离上次请求超过 idleRefreshInterval 且距离上次唤醒
+// 超过 idleRefreshInterval 时，轻量唤醒页面（setWebLifecycleState active + bringToFront，
+// 毫秒级，不重载）——让 Chrome 始终认为页面活跃，永不触发 Memory Saver 卸载。
+// [Fix 2026-08-10] 唤醒失败（3 秒超时）说明页面已被 Memory Saver 卸载（渲染进程销毁），
+// 此时导航/唤醒命令都会挂起，改为自动重建页面（关闭旧标签页→新建→等就绪）。
 // 与 sendChat 共用 h.mu：活跃请求期间拿不到锁会跳过，绝不打断进行中的对话；
 // 登录/账号切换期间（loggedIn=false）也会跳过。
 // goroutine 随 session 关闭（browserCtx 取消）自动退出。
@@ -591,7 +637,14 @@ func (h *ChatHandler) StartIdleRefresher() {
 				// 拿锁后重新检查：等待锁期间可能有请求完成并更新了 lastActivity
 				if h.shouldRefreshPage() {
 					if err := h.refreshPageLocked(); err != nil {
-						log.Printf("[chat] idle refresh failed: %v", err)
+						// [Fix 2026-08-10] 唤醒失败 = 页面被 Memory Saver 卸载，
+						// 重建页面恢复服务（登录态保留在 profile，重建后仍登录）
+						log.Printf("[chat] idle wake failed, rebuilding page: %v", err)
+						if rbErr := h.session.RebuildPage(); rbErr != nil {
+							log.Printf("[chat] page rebuild failed: %v", rbErr)
+						} else {
+							h.lastRefresh.Store(time.Now().UnixNano())
+						}
 					}
 				}
 				h.mu.Unlock()
@@ -1597,6 +1650,21 @@ func (h *ChatHandler) waitForResponse(ctx context.Context, timeout time.Duration
 			return "", "", false, false, ctx.Err()
 		default:
 		}
+		// [Fix 2026-08-11] 系统提示兜底：detectImmediateError 可能漏检（如页面销毁重建后
+		// lastMsg 是旧回复，此前误判 thinking 提前退出；或系统提示渲染略慢），
+		// 此处每轮轮询额外扫 DOM，检测到 convLimit/serverBusy 立即返回，避免干等 120 秒超时。
+		// 实测：2026-08-11 14:06 页面销毁后误判 thinking，AI 实际未回复，waitForResponse 干等超时。
+		var domErr string
+		if err := chromedp.Run(h.session.Context(), chromedp.Evaluate(errorDetectJS, &domErr)); err == nil {
+			if strings.HasPrefix(domErr, "convLimit:") {
+				log.Printf("[chat] convLimit detected via errorDetectJS in waitForResponse, returning early")
+				return "", "", true, false, nil
+			}
+			if strings.HasPrefix(domErr, "serverBusy:") {
+				log.Printf("[chat] serverBusy detected via errorDetectJS in waitForResponse, returning early")
+				return "", "", false, true, nil
+			}
+		}
 		var result string
 		err := chromedp.Run(h.session.Context(),
 			chromedp.Evaluate(`JSON.stringify({
@@ -1975,39 +2043,51 @@ func (h *ChatHandler) NewConversation(ctx context.Context) error {
 	h.convMsgThreshold.Store(threshold)
 	log.Printf("[chat] new conv threshold: %d chars", threshold)
 
-	var found bool
+	var btnPos string
 	err := chromedp.Run(h.session.Context(),
 		chromedp.Evaluate(`(()=>{
-			const links = document.querySelectorAll('a[href="/"], a[href*="/chat"]');
-			for (const link of links) {
-				const text = (link.textContent || '').trim();
+			// [Fix 2026-08-11] 只定位不点击：DeepSeek 是 React 页面，JS .click() 对按钮无效，
+			// 必须用 chromedp.MouseClickXY 真实点击（与 checkToggleStates/ensureMessageSent 一致）。
+			// 此前用 JS click 点"新对话"按钮后直接返回"成功"（found=true 但实际没开），
+			// 导致重试发送还在旧对话、再次触发"对话长度上限"、give up 把系统提示原文返回客户端
+			// （实测 2026-08-11 13:43-13:56 共 28 次）。
+			const candidates = document.querySelectorAll('a[href="/"], a[href*="/chat"], [class*="new"], [class*="New"], [class*="sidebar"]');
+			for (const el of candidates) {
+				const text = (el.textContent || '').trim();
 				if (text === 'New Chat' || text === '新对话' || text === '新话题') {
-					link.click();
-					return true;
+					const r = el.getBoundingClientRect();
+					if (r.width > 0 && r.height > 0) {
+						return JSON.stringify({found: true, x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2)});
+					}
 				}
 			}
-			const btns = document.querySelectorAll('[class*="new"], [class*="New"], [class*="sidebar"]');
-			for (const btn of btns) {
-				const text = (btn.textContent || '').trim();
-				if (text === 'New Chat' || text === '新对话' || text === '新话题') {
-					btn.click();
-					return true;
-				}
-			}
-			return false;
-		})()`, &found),
+			return JSON.stringify({found: false});
+		})()`, &btnPos),
 	)
-	if err != nil {
-		log.Printf("[chat] UI click attempt: %v", err)
+	if err == nil && strings.Contains(btnPos, `"found":true`) {
+		var pos struct {
+			X int `json:"x"`
+			Y int `json:"y"`
+		}
+		if json.Unmarshal([]byte(btnPos), &pos) == nil {
+			log.Printf("[chat] clicking new conversation button at (%d,%d)", pos.X, pos.Y)
+			if err := chromedp.Run(h.session.Context(), chromedp.MouseClickXY(float64(pos.X), float64(pos.Y))); err == nil {
+				// 验证新对话是否真的打开（空对话、无历史消息），没开成功则继续尝试 Ctrl+J
+				if h.waitForEmptyTextarea(3 * time.Second) {
+					log.Println("[chat] new conversation confirmed (empty chat)")
+					// 新对话后 DeepSeek 默认关闭深度思考，需要重新检测并开启
+					h.session.checkToggleStates()
+					return nil
+				}
+				log.Println("[chat] new conversation button clicked but chat not empty, trying Ctrl+J")
+			} else {
+				log.Printf("[chat] new conversation click error: %v, trying Ctrl+J", err)
+			}
+		}
+	} else {
+		log.Println("[chat] UI element not found, trying Ctrl+J")
 	}
-	if found {
-		log.Println("[chat] new conversation started via UI click")
-		h.waitForEmptyTextarea(3 * time.Second)
-		// 新对话后 DeepSeek 默认关闭深度思考，需要重新检测并开启
-		h.session.checkToggleStates()
-		return nil
-	}
-	log.Println("[chat] UI element not found, trying Ctrl+J")
+	log.Println("[chat] trying Ctrl+J")
 	err = chromedp.Run(h.session.Context(),
 		chromedp.Evaluate(`(()=>{
 			document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', code: 'KeyJ', ctrlKey: true, metaKey: false, bubbles: true }));
@@ -2323,8 +2403,10 @@ func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, t
 			continue
 		}
 		if convLimit {
-			log.Printf("[chat] attempt %d convLimit from waitForResponse, will retry with new conversation", attempt+1)
-			return h.retryWithNewConversation(ctx, mode, text, images, files)
+			// [Fix 2026-08-11] 切换账号后仍 convLimit 时直接放弃（不再回 retryWithNewConversation），
+			// 防止"新对话→切账号→新对话"无限循环。重试链：主路径 convLimit → 新对话 → 仍 convLimit → 切账号 → 放弃。
+			log.Printf("[chat] attempt %d convLimit after account switch, giving up (chain: new conv -> account switch)", attempt+1)
+			return nil, fmt.Errorf("切换账号后仍触发对话长度上限")
 		}
 		if hasServerBusy(content) {
 			// [账号质量管理] 记录当前重试账号的限制触发
@@ -2358,7 +2440,10 @@ func (h *ChatHandler) retryWithNewConversation(ctx context.Context, mode string,
 	}
 	if err := h.NewConversation(ctx); err != nil {
 		log.Printf("[chat] new conversation failed: %v", err)
-		return &ChatResponse{Content: "达到对话长度上限"}, nil
+		// [Fix 2026-08-11] 不再把"达到对话长度上限"当作正常响应返回客户端
+		// （木偶说实测收到 len=15 的该系统提示，靠异常短内容检测才发现）。
+		// 改为返回明确错误，让客户端知道开新对话失败的真实原因。
+		return nil, fmt.Errorf("开新对话失败: %w", err)
 	}
 	if err := h.prepareForRetry(ctx, mode, images); err != nil {
 		return &ChatResponse{Content: "新开对话后准备失败"}, err
@@ -2375,10 +2460,13 @@ func (h *ChatHandler) retryWithNewConversation(ctx context.Context, mode string,
 		log.Printf("[chat] new conversation still serverBusy, switching account")
 		return h.retryWithAccountSwitch(ctx, mode, text, images, files)
 	}
-	// 新对话后仍然命中上限（极端情况），返回错误
+	// 新对话后仍然命中上限：切换账号重试（用户要求：拦截到大量系统提示应"新开对话或切换账号后重试"）
 	if convLimit || hasConvLimit(content) {
-		log.Printf("[chat] new conversation still hit convLimit, giving up")
-		return &ChatResponse{Content: content, Thinking: thinking}, nil
+		// [Fix 2026-08-11] 用户确认：新对话（干净空对话）不可能触发"对话长度上限"，
+		// 若新对话后仍出现 convLimit，一定是脚本问题（新对话未真正开启 / 上次系统提示
+		// 残留被误判为本次结果），切换账号解决不了脚本问题，直接返回明确错误。
+		log.Printf("[chat] new conversation still hit convLimit (unexpected for fresh chat), returning error: %q", truncateForLog(content, 200))
+		return nil, fmt.Errorf("新对话后仍触发对话长度上限（新对话不应触发，疑似脚本问题，请检查日志）")
 	}
 	if content == "" {
 		log.Printf("[chat] new conversation empty content, trying copy button fallback")

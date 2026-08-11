@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"context"
@@ -22,23 +22,39 @@ import (
 	"ds2api-browser/config"
 )
 
-// dailyRotateWriter 按天滚动日志文件，同时输出到控制台
+// dailyRotateWriter 按天滚动日志文件，同时输出到控制台。
+// [Fix 2026-08-10] 控制台输出异步化：文件写入永不阻塞，控制台输出被系统阻塞
+// （Windows 控制台冻结/终端卡死）时自动跳过新日志，绝不影响文件日志和程序逻辑。
+// 原实现"先写文件再写屏幕"顺序执行，屏幕输出被阻塞时整个日志系统（含文件）卡死，
+// 保活任务卡在写日志、操作锁被占、所有请求阻塞（实测 2026-08-10 22:33-23:09 卡 36 分钟）。
 type dailyRotateWriter struct {
-	mu       sync.Mutex
-	dir      string
-	prefix   string
-	file     *os.File
-	curDate  string
-	maxDays  int
+	mu        sync.Mutex
+	dir       string
+	prefix    string
+	file      *os.File
+	curDate   string
+	maxDays   int
+	consoleCh chan []byte // 控制台输出队列（满则丢弃，不阻塞文件日志）
+	stopCh    chan struct{}
+	doneCh    chan struct{}
 }
 
 func newDailyRotateWriter(dir, prefix string, maxDays int) (*dailyRotateWriter, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, err
 	}
-	w := &dailyRotateWriter{dir: dir, prefix: prefix, maxDays: maxDays}
+	w := &dailyRotateWriter{
+		dir:       dir,
+		prefix:    prefix,
+		maxDays:   maxDays,
+		consoleCh: make(chan []byte, 256),
+		stopCh:    make(chan struct{}),
+		doneCh:    make(chan struct{}),
+	}
 	// 启动时清理过期日志
 	w.cleanOldLogs()
+	// 启动控制台输出消费者 goroutine
+	go w.consoleWriter()
 	return w, nil
 }
 
@@ -60,13 +76,32 @@ func (w *dailyRotateWriter) Write(p []byte) (n int, err error) {
 		w.curDate = today
 	}
 
-	// 写入文件
+	// 写入文件（同步，永不阻塞）
 	if w.file != nil {
 		w.file.Write(p)
 	}
 
-	// 同时输出到控制台
-	return os.Stderr.Write(p)
+	// 异步输出到控制台：控制台被阻塞（channel 满）时丢弃，不影响文件日志
+	select {
+	case w.consoleCh <- p:
+	default:
+	}
+	return len(p), nil
+}
+
+// consoleWriter 消费控制台输出队列并写入 stderr。
+// stderr 阻塞时本 goroutine 阻塞在写 stderr，consoleCh 满后新日志被丢弃（Write 的 select default），
+// 文件日志与程序逻辑完全不受影响。
+func (w *dailyRotateWriter) consoleWriter() {
+	defer close(w.doneCh)
+	for {
+		select {
+		case <-w.stopCh:
+			return
+		case p := <-w.consoleCh:
+			os.Stderr.Write(p)
+		}
+	}
 }
 
 func (w *dailyRotateWriter) cleanOldLogs() {
@@ -92,12 +127,37 @@ func (w *dailyRotateWriter) cleanOldLogs() {
 }
 
 func (w *dailyRotateWriter) Close() error {
+	// 停止控制台消费者 goroutine（不强等：stderr 可能阻塞，进程退出时自然结束）
+	close(w.stopCh)
+	select {
+	case <-w.doneCh:
+	case <-time.After(100 * time.Millisecond):
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.file != nil {
 		return w.file.Close()
 	}
 	return nil
+}
+
+// startHeartbeat 启动心跳 goroutine：每 interval 更新 logs/heartbeat.txt 的修改时间。
+// [Fix 2026-08-10] 终端卡死/控制台冻结时无法从终端判断程序是否存活，
+// 心跳文件是独立于控制台的"生命信号"（纯文件写入），用户查看其修改时间即可确认程序正常运行。
+func startHeartbeat(interval time.Duration) {
+	go func() {
+		writeHeartbeat()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			writeHeartbeat()
+		}
+	}()
+}
+
+func writeHeartbeat() {
+	content := fmt.Sprintf("[heartbeat] %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	os.WriteFile(filepath.Join("logs", "heartbeat.txt"), []byte(content), 0644)
 }
 
 func main() {
@@ -113,6 +173,9 @@ func main() {
 		log.SetFlags(log.LstdFlags)
 		defer logWriter.Close()
 	}
+
+	// 心跳文件：每 30 秒更新 logs/heartbeat.txt，终端冻结时仍可确认程序存活
+	startHeartbeat(30 * time.Second)
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {

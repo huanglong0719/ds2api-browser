@@ -20,6 +20,36 @@ window.__dsInjectDone = true;
 window.__dsServerBusy = false;
 window.__dsConvLimitHit = false;
 
+// [Fix 2026-08-11] 系统提示过滤：DeepSeek 的"对话长度上限/服务器繁忙"提示会通过 SSE 流入 capture，
+// 被 Go 层当成 AI 回复返回给客户端（木偶说实测 len=15）。在拦截器源头过滤：
+// 1) 系统提示文本不进 capture（appendCapture 整体复查，含关键词则清空）
+// 2) 命中关键词时直接设置 __dsServerBusy/__dsConvLimitHit 标志（不依赖 checkFlags 的 FINISHED 时机）
+var __sysBusyKw = ['消息发送过于频繁', '发送过于频繁', '服务器繁忙', '服务繁忙', '请稍后重试', '请稍后再试', '有消息正在生成'];
+var __sysLimitKw = ['达到对话长度上限', '请开启新对话', '对话长度上限'];
+function isSystemPrompt(text) {
+	if (!text) return false;
+	for (var i = 0; i < __sysBusyKw.length; i++) {
+		if (text.indexOf(__sysBusyKw[i]) !== -1) { window.__dsServerBusy = true; return true; }
+	}
+	for (var i = 0; i < __sysLimitKw.length; i++) {
+		if (text.indexOf(__sysLimitKw[i]) !== -1) { window.__dsConvLimitHit = true; return true; }
+	}
+	return false;
+}
+// 追加回复内容：只识别系统提示并置位标志，不清空 capture。
+// [Fix 2026-08-11] 拦截到系统提示 = 当次不可能有回复内容（用户确认），
+// 由 Go 层检测标志后判定失败并走重试（新开对话/切换账号），捕获内容不会返回客户端，
+// 因此无需在拦截器里做"清空/过滤"（此前清空逻辑已回退）。
+function appendCapture(text) {
+	if (!text) return;
+	window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + text;
+	isSystemPrompt(window.__dsBrowserCapture);
+}
+function appendThinking(text) {
+	if (!text) return;
+	window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + text;
+}
+
 function checkFlags() {
 	var all = (window.__dsBrowserCapture || '') + (window.__dsBrowserThinking || '');
 	if (all.indexOf('消息发送过于频繁') !== -1 || all.indexOf('发送过于频繁') !== -1 || all.indexOf('服务器繁忙') !== -1 || all.indexOf('服务繁忙') !== -1 || all.indexOf('请稍后重试') !== -1) {
@@ -71,11 +101,11 @@ window.fetch = async function(...args) {
 							for (const f of d.v) {
 								if (f && f.content) {
 									if (f.type === 'RESPONSE') {
-										window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + f.content;
+										appendCapture(f.content);
 									} else if (f.type === 'THINKING') {
-										window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + f.content;
+										appendThinking(f.content);
 									} else {
-										window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + f.content;
+										appendCapture(f.content);
 									}
 								}
 							}
@@ -85,18 +115,18 @@ window.fetch = async function(...args) {
 							}
 						} else if (d.p && d.p.indexOf('response/fragments/') === 0 && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
 							if (window.__dsCurrentFragmentType === 'THINK' || window.__dsCurrentFragmentType === 'THINKING') {
-								window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + d.v;
+								appendThinking(d.v);
 							} else {
-								window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
+								appendCapture(d.v);
 							}
 						} else if (d.p === 'response/content' && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
-							window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
+							appendCapture(d.v);
 						} else if (typeof d.v === 'string' && !d.p && !d.o && !d.content && !d.thinking) {
 							// 纯 v 字符串包：依据当前 fragment 类型分流到 thinking/capture
 							if (window.__dsCurrentFragmentType === 'THINK' || window.__dsCurrentFragmentType === 'THINKING') {
-								window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + d.v;
+								appendThinking(d.v);
 							} else {
-								window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
+								appendCapture(d.v);
 							}
 						} else if (d.v && d.v.response) {
 							var r = d.v.response;
@@ -175,11 +205,11 @@ window.XMLHttpRequest = function() {
 								for (const f of d.v) {
 									if (f && f.content) {
 										if (f.type === 'RESPONSE') {
-											window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + f.content;
+											appendCapture(f.content);
 										} else if (f.type === 'THINKING') {
-											window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + f.content;
+											appendThinking(f.content);
 										} else {
-											window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + f.content;
+											appendCapture(f.content);
 										}
 									}
 								}
@@ -190,26 +220,26 @@ window.XMLHttpRequest = function() {
 								}
 							} else if (d.p && d.p.indexOf('response/fragments/') === 0 && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
 								if (window.__dsCurrentFragmentType === 'THINK' || window.__dsCurrentFragmentType === 'THINKING') {
-									window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + d.v;
+									appendThinking(d.v);
 								} else {
-									window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
+									appendCapture(d.v);
 								}
 							} else if (d.p === 'response/content' && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
-								window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
+								appendCapture(d.v);
 							} else if (typeof d.v === 'string' && !d.p && !d.o && !d.content && !d.thinking) {
 								if (window.__dsCurrentFragmentType === 'THINK' || window.__dsCurrentFragmentType === 'THINKING') {
-									window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + d.v;
+									appendThinking(d.v);
 								} else {
-									window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
+									appendCapture(d.v);
 								}
 							} else if (typeof d.content === 'string' && !d.p) {
 								var nc = d.content.substring(lastDirectContentLen);
 								lastDirectContentLen = d.content.length;
-								if (nc) window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + nc;
+								if (nc) appendCapture(nc);
 							} else if (typeof d.thinking === 'string' && !d.p) {
 								var nt = d.thinking.substring(lastDirectThinkingLen);
 								lastDirectThinkingLen = d.thinking.length;
-								if (nt) window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + nt;
+								if (nt) appendThinking(nt);
 							} else if (d.v && d.v.response) {
 								var r = d.v.response;
 								if (Array.isArray(r.fragments) && r.fragments.length > 0) {
@@ -222,15 +252,15 @@ window.XMLHttpRequest = function() {
 								if (typeof r.content === 'string') {
 									var nc = r.content.substring(lastVContentLen);
 									lastVContentLen = r.content.length;
-									if (nc) window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + nc;
+									if (nc) appendCapture(nc);
 								}
 								if (typeof r.thinking === 'string') {
 									var nt = r.thinking.substring(lastVThinkingLen);
 									lastVThinkingLen = r.thinking.length;
-									if (nt) window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + nt;
+									if (nt) appendThinking(nt);
 								}
 								if (typeof r.delta === 'string' && r.delta) {
-									window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + r.delta;
+									appendCapture(r.delta);
 								}
 							}
 							if (d.p === 'response/status' && d.v === 'FINISHED') {
@@ -277,11 +307,11 @@ if (OrigES) {
 						for (const f of d.v) {
 							if (f && f.content) {
 								if (f.type === 'RESPONSE') {
-									window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + f.content;
+									appendCapture(f.content);
 								} else if (f.type === 'THINKING') {
-									window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + f.content;
+									appendThinking(f.content);
 								} else {
-									window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + f.content;
+									appendCapture(f.content);
 								}
 							}
 						}
@@ -293,16 +323,16 @@ if (OrigES) {
 						}
 					} else if (d.p && d.p.indexOf('response/fragments/') === 0 && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
 						if (window.__dsCurrentFragmentType === 'THINK' || window.__dsCurrentFragmentType === 'THINKING') {
-							window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + d.v;
+							appendThinking(d.v);
 						} else {
-							window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
+							appendCapture(d.v);
 						}
 					} else if (typeof d.v === 'string' && !d.p && !d.o && !d.content && !d.thinking) {
 						// 纯 v 字符串包：依据当前 fragment 类型分流到 thinking/capture
 						if (window.__dsCurrentFragmentType === 'THINK' || window.__dsCurrentFragmentType === 'THINKING') {
-							window.__dsBrowserThinking = (window.__dsBrowserThinking || '') + d.v;
+							appendThinking(d.v);
 						} else {
-							window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
+							appendCapture(d.v);
 						}
 					} else if (d.v && d.v.response) {
 						var r = d.v.response;
@@ -313,7 +343,7 @@ if (OrigES) {
 							}
 						}
 					} else if (d.p === 'response/content' && typeof d.v === 'string' && (!d.o || d.o === 'APPEND')) {
-						window.__dsBrowserCapture = (window.__dsBrowserCapture || '') + d.v;
+						appendCapture(d.v);
 					}
 					if (d.p === 'response/status' && d.v === 'FINISHED') {
 						window.__dsBrowserDone = true;
