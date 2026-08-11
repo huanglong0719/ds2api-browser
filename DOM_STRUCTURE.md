@@ -402,6 +402,7 @@ DIV.ds-notification-container.ds-theme.ds-notification-container--top-right
 - [ ] 图片上传后的预览元素结构（代码已用 `img[src*="blob:"]`/`img[src*="data:"]` 检测，具体 DOM 结构待探测记录）
 - [ ] 文件上传后的附件元素结构（代码用 `input[type="file"]` 上传，上传后的附件卡片 DOM 结构待探测记录）
 - [ ] 新对话按钮的精确选择器
+- [ ] **系统提示真实出现后的完整链路（未验证 2026-08-11）**：拦截器 `isSystemPrompt` 置位 `__dsServerBusy`/`__dsConvLimitHit` 标志 → errorDetectJS 检测 → Go 层 waitForResponse 提前返回 → 新开对话/切换账号重试。**此链路目前仅代码实现，未在真实系统提示（"达到对话长度上限"/"服务器繁忙"/"消息发送过于频繁"）出现时实测过**。原因：主动新对话检查（累计字符 60-90 万 > 阈值）已在服务器触发系统提示（约 100 万字符）之前自动开新对话，真实系统提示难以自然出现。如遇真实系统提示，需确认：①拦截器标志正确置位；②waitForResponse 不干等超时；③重试链正确执行（convLimit→新对话，serverBusy→切账号）；④系统提示文本不会返回给客户端。
 
 ---
 
