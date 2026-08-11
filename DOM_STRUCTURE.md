@@ -402,7 +402,9 @@ DIV.ds-notification-container.ds-theme.ds-notification-container--top-right
 - [ ] 图片上传后的预览元素结构（代码已用 `img[src*="blob:"]`/`img[src*="data:"]` 检测，具体 DOM 结构待探测记录）
 - [ ] 文件上传后的附件元素结构（代码用 `input[type="file"]` 上传，上传后的附件卡片 DOM 结构待探测记录）
 - [ ] 新对话按钮的精确选择器
-- [ ] **系统提示真实出现后的完整链路（未验证 2026-08-11）**：拦截器 `isSystemPrompt` 置位 `__dsServerBusy`/`__dsConvLimitHit` 标志 → errorDetectJS 检测 → Go 层 waitForResponse 提前返回 → 新开对话/切换账号重试。**此链路目前仅代码实现，未在真实系统提示（"达到对话长度上限"/"服务器繁忙"/"消息发送过于频繁"）出现时实测过**。原因：主动新对话检查（累计字符 60-90 万 > 阈值）已在服务器触发系统提示（约 100 万字符）之前自动开新对话，真实系统提示难以自然出现。如遇真实系统提示，需确认：①拦截器标志正确置位；②waitForResponse 不干等超时；③重试链正确执行（convLimit→新对话，serverBusy→切账号）；④系统提示文本不会返回给客户端。
+- [x] **系统提示真实出现后的完整链路（2026-08-11 部分验证）**：拦截器 `isSystemPrompt` 置位 `__dsServerBusy`/`__dsConvLimitHit` 标志 → errorDetectJS 检测 → Go 层提前返回 → 重试（convLimit→新对话，serverBusy→切账号）。
+  - **serverBusy 链路已真实验证（2026-08-11 17:50）**：拦截器检测到服务器繁忙（关键词命中 `__sysBusyKw`）→ 置位 `__dsServerBusy` → errorDetectJS 返回 `serverBusy:interceptor`（domInfo 为空属预期：标志位检测优先短路）→ Go 层立即判定并 `RecordLimitTrigger` → 自动切换账号（alejandrayz...→fredst.one9...）→ 新账号请求全部正常。全链路执行正确、无干等超时。
+  - **convLimit 链路设计上不会触发（2026-08-11 用户确认）**：只要累计字符统计正常执行，主动新对话检查（60-90 万随机阈值）必在服务器"对话长度上限"（约 100 万字符）之前触发新对话并清零重计，**服务器系统提示永不出现**。若 convLimit 被动链路被触发，反而说明统计失效（异常信号，需查日志确认 convMsgCount 是否正常累加）。
 
 ---
 
