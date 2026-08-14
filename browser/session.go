@@ -1228,6 +1228,15 @@ func (s *Session) findAccount(email string) *config.Account {
 	return nil
 }
 
+// ShouldRotate 检查当前账号是否处理了足够多的请求，应该轮换
+// rotationInterval=0 表示不轮换
+func (s *Session) ShouldRotate() bool {
+	if s.cfg.RotationInterval <= 0 {
+		return false
+	}
+	return s.sessionRequestCount >= s.cfg.RotationInterval
+}
+
 // SwitchAccount 切换到下一个账号并重新登录
 // 返回切换后的账号邮箱，如果可用账号少于2个则返回错误
 // 注意：登录失败次数 > 0 的账号已在 reorderAccounts 时从 sortedIndices 中排除
@@ -1361,6 +1370,45 @@ func (s *Session) fixCurrentSortedIdx() {
 	s.currentSortedIdx = 0
 }
 
+// reDetectToggleJS 重新检测"深度思考"toggle 的点击坐标。
+// 用于点击失败后重新定位——页面从"欢迎页"切到"对话中"时 toggle 会从 y≈320 跳到 y≈447，
+// 必须每次点击前重新取坐标，否则点到空位置。
+const reDetectToggleJS = `(()=>{
+	var info = {thinkingPos: null};
+	var toggles = document.querySelectorAll('div.ds-toggle-button, [aria-pressed]');
+	for (var i = 0; i < toggles.length; i++) {
+		var el = toggles[i];
+		var text = (el.textContent || '').trim();
+		if (text.includes('深度思考') && !info.thinkingPos) {
+			var r = el.getBoundingClientRect();
+			if (r.width > 0 && r.height > 0) {
+				info.thinkingPos = {x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2)};
+			}
+		}
+	}
+	return JSON.stringify(info);
+})()`
+
+// clickThinkingToggleJS 直接调用 React 的 onClick 切换"深度思考"toggle。
+// 实测（08-13 15:45）切账号后真实鼠标点击（MouseClickXY）无法触发 React 切换
+// （React 17+ 事件委托在页面刚重建时未正确分发真实鼠标事件），但直接调用
+// toggle 元素 __reactProps 上的 onClick 100% 生效、可稳定翻转（true↔false）。
+// 传一个最小 event 对象（含 preventDefault/stopPropagation/target）即可满足 onClick。
+const clickThinkingToggleJS = `(()=>{
+	const toggles = document.querySelectorAll('div.ds-toggle-button, [aria-pressed]');
+	for (const el of toggles) {
+		if ((el.textContent||'').trim().includes('深度思考')) {
+			const rk = Object.keys(el).filter(k => k.startsWith('__reactProps'));
+			if (rk.length === 0) return 'no_react';
+			const props = el[rk[0]];
+			if (!(props && props.onClick)) return 'no_onclick';
+			props.onClick({ preventDefault(){}, stopPropagation(){}, target: el });
+			return 'clicked';
+		}
+	}
+	return 'not_found';
+})()`
+
 // checkToggleStates 检查并确保"深度思考"和"智能搜索"处于开启状态（使用 s.Context()，供非持锁场景调用）。
 func (s *Session) checkToggleStates() {
 	s.checkToggleStatesLocked(s.Context())
@@ -1369,9 +1417,48 @@ func (s *Session) checkToggleStates() {
 // checkToggleStatesLocked 检查并确保"深度思考"和"智能搜索"处于开启状态（接受外部 ctx）。
 // 登录后 DeepSeek 默认关闭深度思考，需要自动点击开启
 // DOM 特征：div.ds-toggle-button，aria-pressed="true" 表示开启，class 含 --selected 表示开启
-// 注意：DeepSeek 的 React 按钮对 JS .click() 无效，必须用 chromedp.MouseClickXY 真实点击
+// 注意：DeepSeek 的 React 按钮对原生 el.click() 无效，且真实鼠标点击（MouseClickXY）
+// 在页面重建后 React 事件委托未分发时也无效，必须直接调用 __reactProps.onClick（见 clickThinkingToggleJS）
 // 注意：本函数直接使用传入的 ctx，不再调用 s.Context()——供已持有 s.ctxMu 锁的场景（如 restartBrowserLocked）使用，避免重复加锁死锁。
 func (s *Session) checkToggleStatesLocked(ctx context.Context) {
+	// [Fix 2026-08-13] 前置等待页面真正就绪。两个条件缺一不可：
+	// 1. JS 引擎事件循环已恢复（应对 Memory Saver 冻结后唤醒：DOM 未销毁、
+	//    __reactProps 一直在，但事件循环冻结，写入 window 随机值读回比对一致才算恢复）
+	// 2. React 已挂载"深度思考"toggle 元素（应对切账号/新对话后全新登录：
+	//    window 可写≠React 组件树已挂载，必须等到 toggle 元素上有 __reactProps
+	//    且 props.onClick 存在，说明 React 事件委托已建立，MouseClickXY 点击才生效）
+	// 实测（08-13 15:24）：切账号后 toggle 检测到关、React 未挂载时 3 次点击全失败；
+	// React 挂载后（hasClick=true）一次点击即点亮。最多等 15 秒。
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		probe := fmt.Sprintf("dsProbe%d", time.Now().UnixNano())
+		var ready string
+		err := chromedp.Run(ctx,
+			chromedp.Evaluate(fmt.Sprintf(`window.__dsWakeProbe = %q;`, probe), nil),
+			chromedp.Evaluate(fmt.Sprintf(`(()=>{
+				const ta = document.querySelector('textarea');
+				if (!ta) return 'no_ta';
+				if (document.readyState !== 'complete') return 'loading';
+				if (window.__dsWakeProbe !== %q) return 'wake_mismatch';
+				const toggles = document.querySelectorAll('div.ds-toggle-button, [aria-pressed]');
+				for (const el of toggles) {
+					if ((el.textContent||'').trim().includes('深度思考')) {
+						const rk = Object.keys(el).filter(k => k.startsWith('__reactProps'));
+						if (rk.length === 0) return 'no_react';
+						const props = el[rk[0]];
+						if (!(props && props.onClick)) return 'no_onclick';
+						return 'ready';
+					}
+				}
+				return 'no_toggle';
+			})()`, probe), &ready),
+		)
+		if err == nil && ready == "ready" {
+			break // JS 引擎恢复 + React 已挂载 toggle，点击才有效
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+
 	// 第一步：用 JS 检测状态和获取按钮坐标
 	var detectResult string
 	if err := chromedp.Run(ctx, chromedp.Evaluate(`(()=>{
@@ -1413,24 +1500,42 @@ func (s *Session) checkToggleStatesLocked(ctx context.Context) {
 	}
 	log.Printf("[session] toggle states: %s", detectResult)
 
-	// 第二步：如果深度思考未开启，用真实鼠标点击
+	// 第二步：如果深度思考未开启，用 React onClick 直接调用切换，循环尝试直到点亮或超时。
+	// [Fix 2026-08-13] 切账号/新对话后真实鼠标点击（MouseClickXY）无法触发 React 切换
+	// （React 17+ 事件委托未正确分发真实鼠标事件），改为直接调用 toggle 元素的
+	// __reactProps.onClick，实测 100% 生效。循环最长 20 秒，每次失败后等待 1.5 秒
+	// 让 React 完成 hydrate 再重试。
 	if strings.Contains(detectResult, `"thinkingOn":false`) && strings.Contains(detectResult, `"thinkingPos":`) {
-		var pos struct {
-			ThinkingPos *struct {
-				X int `json:"x"`
-				Y int `json:"y"`
-			} `json:"thinkingPos"`
-		}
-		json.Unmarshal([]byte(detectResult), &pos)
-		if pos.ThinkingPos != nil {
-			log.Printf("[session] clicking 深度思考 toggle at (%d,%d)", pos.ThinkingPos.X, pos.ThinkingPos.Y)
-			if err := chromedp.Run(ctx, chromedp.MouseClickXY(float64(pos.ThinkingPos.X), float64(pos.ThinkingPos.Y))); err != nil {
+		clickDeadline := time.Now().Add(20 * time.Second)
+		attempt := 0
+		for time.Now().Before(clickDeadline) {
+			attempt++
+			var pos struct {
+				ThinkingPos *struct {
+					X int `json:"x"`
+					Y int `json:"y"`
+				} `json:"thinkingPos"`
+			}
+			json.Unmarshal([]byte(detectResult), &pos)
+			if pos.ThinkingPos == nil {
+				// 无坐标，重新检测后继续
+				if err := chromedp.Run(ctx, chromedp.Evaluate(reDetectToggleJS, &detectResult)); err != nil {
+					log.Printf("[session] checkToggleStates re-detect error: %v", err)
+					return
+				}
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			log.Printf("[session] clicking 深度思考 toggle at (%d,%d) (attempt %d)", pos.ThinkingPos.X, pos.ThinkingPos.Y, attempt)
+			var clickResult string
+			if err := chromedp.Run(ctx, chromedp.Evaluate(clickThinkingToggleJS, &clickResult)); err != nil {
 				log.Printf("[session] checkToggleStates click error: %v", err)
 				return
 			}
-			time.Sleep(500 * time.Millisecond)
+			log.Printf("[session] click result: %s", clickResult)
+			time.Sleep(800 * time.Millisecond)
 
-			// 验证点击后是否已开启（复用与第一步相同的检测逻辑）
+			// 验证点击后是否已开启
 			var verify string
 			if err := chromedp.Run(ctx, chromedp.Evaluate(`(()=>{
 			var toggles = document.querySelectorAll('div.ds-toggle-button, [aria-pressed]');
@@ -1445,7 +1550,18 @@ func (s *Session) checkToggleStatesLocked(ctx context.Context) {
 				return
 			}
 			log.Printf("[session] 深度思考 after click: %s", verify)
+			if strings.Contains(verify, `"on":true`) {
+				log.Printf("[session] 深度思考 toggle enabled (attempt %d)", attempt)
+				return
+			}
+			// 未开启：等待 React 事件委托就绪后重新检测坐标再试
+			time.Sleep(1500 * time.Millisecond)
+			if err := chromedp.Run(ctx, chromedp.Evaluate(reDetectToggleJS, &detectResult)); err != nil {
+				log.Printf("[session] checkToggleStates re-detect error: %v", err)
+				return
+			}
 		}
+		log.Printf("[session] ⚠️ 深度思考 toggle failed to enable after %d attempts", attempt)
 	}
 }
 
@@ -1703,10 +1819,35 @@ func (s *Session) AvailableAccountCount() int {
 	return len(s.sortedIndices)
 }
 
+// NavigateHome 导航回 DeepSeek 首页。
+// [Fix 2026-08-12] 页面全新加载会重置深度思考开关（DeepSeek 默认关闭），
+// 必须等待页面就绪后重新检查并开启，否则后续请求回复将不带思考过程。
+// 与 restart/rebuild 后 checkToggleStates 一致；连续对话（页面未重建）时
+// 深度思考状态保留，不走此路径，不需要重复检查。
 func (s *Session) NavigateHome(ctx context.Context) error {
-	return chromedp.Run(s.Context(),
+	if err := chromedp.Run(s.Context(),
 		chromedp.Navigate("https://chat.deepseek.com/"),
-	)
+	); err != nil {
+		return err
+	}
+	// 等待聊天页面就绪（textarea 出现 = 已登录 + 页面加载完成），
+	// 就绪后再检查深度思考开关，避免检测时页面尚未渲染出 toggle。
+	taDeadline := time.Now().Add(15 * time.Second)
+	var taOK bool
+	for time.Now().Before(taDeadline) {
+		if err := chromedp.Run(s.Context(),
+			chromedp.Evaluate(`!!document.querySelector('textarea')`, &taOK),
+		); err == nil && taOK {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !taOK {
+		log.Printf("[session] NavigateHome: chat page not ready in 15s, still checking toggles")
+	}
+	// 深度思考/智能搜索开关检查（内部带日志，失败不中断）
+	s.checkToggleStates()
+	return nil
 }
 
 func (s *Session) NewConversation(ctx context.Context) error {

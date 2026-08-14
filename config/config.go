@@ -11,12 +11,13 @@ type Account struct {
 }
 
 type Config struct {
-	Port               int       `json:"port"`
-	Accounts           []Account `json:"accounts"`
-	APIKey             string    `json:"api_key"`
-	ChromePath         string    `json:"chrome_path,omitempty"`
-	AutoNewConversation bool     `json:"auto_new_conversation,omitempty"`
-	ResponseTimeoutSec int       `json:"response_timeout_sec,omitempty"` // 响应等待超时(秒),默认120
+	Port                int       `json:"port"`
+	Accounts            []Account `json:"accounts"`
+	APIKey              string    `json:"api_key"`
+	ChromePath          string    `json:"chrome_path,omitempty"`
+	AutoNewConversation bool      `json:"auto_new_conversation,omitempty"`
+	ResponseTimeoutSec  int       `json:"response_timeout_sec,omitempty"`  // 响应等待超时(秒),默认120
+	RotationInterval    int       `json:"rotation_interval,omitempty"`     // 定期轮换:每N次成功请求后切换账号,0=不轮换
 }
 
 func Load(path string) (*Config, error) {

@@ -238,6 +238,7 @@ type ChatHandler struct {
 	lastRefresh      atomic.Int64 // 最近一次空闲保活刷新时间（纳秒时间戳，0=从未刷新）
 	convMsgCount     atomic.Int64 // 当前对话中已发送的消息数
 	convMsgThreshold atomic.Int64 // 触发新对话的随机阈值（30-60）
+	rotating         atomic.Bool  // 轮换防重入标志
 }
 
 type ChatRequest struct {
@@ -266,6 +267,32 @@ func NewChatHandler(session *Session, timeoutSec int) *ChatHandler {
 // Session 返回底层 Session 引用
 func (h *ChatHandler) Session() *Session {
 	return h.session
+}
+
+// RotateIfNeeded 检查是否需要轮换账号，如果需要则异步执行
+// 在请求成功返回后调用，不阻塞当前响应
+func (h *ChatHandler) RotateIfNeeded() {
+	if !h.session.ShouldRotate() {
+		return
+	}
+	// 防重入：如果已经在轮换中，跳过
+	if !h.rotating.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		// 获取 chat 锁，确保没有请求正在处理
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		defer h.rotating.Store(false)
+
+		log.Printf("[rotation] 开始定期轮换账号 (当前账号已处理 %d 次请求)", h.session.sessionRequestCount)
+		newEmail, err := h.session.SwitchAccount()
+		if err != nil {
+			log.Printf("[rotation] 轮换失败: %v", err)
+		} else {
+			log.Printf("[rotation] 轮换完成，新账号: %s", newEmail)
+		}
+	}()
 }
 
 func (h *ChatHandler) SendTextChat(ctx context.Context, text string, shouldNewConv bool) (*ChatResponse, error) {
@@ -1016,6 +1043,10 @@ func (h *ChatHandler) injectInterceptor() error {
 			return err
 		}
 		log.Println("[chat] interceptor injected (page reloaded or first time)")
+		// [Fix 2026-08-12] 页面重载后 DeepSeek 会把深度思考开关重置为关闭，
+		// 必须在此重新检查并开启（此时页面已稳定，点击才有效）。
+		// 连续对话时拦截器仍在（injected=true）不会走此分支，无需重复检查。
+		h.session.checkToggleStates()
 	}
 
 	// 基于网页状态等待旧 SSE 流完成（替代固定 300ms 等待）
@@ -1058,10 +1089,13 @@ func (h *ChatHandler) injectInterceptor() error {
 }
 
 // waitForPageStable 页面销毁重建后，等待新页面 React 完全就绪（输入框可正常交互）。
-// 检测信号：textarea 可见 + placeholder 已渲染（React 已接管输入区）+ 连续多次稳定。
+// 检测信号：textarea 可见 + placeholder 已渲染 + React 事件系统已挂载 + 连续多次稳定。
 // 超时返回 false，由调用方决定是否继续。
 // 背景（2026-08-09）：新对话/刷新后页面刚重建，直接输入长文本再按 Enter 会失效，
 // 因为 React 事件监听尚未挂载完成，DispatchKeyEvent 虽到达输入框但不触发发送。
+// [Fix 2026-08-12] 实测切账号后 placeholder 已出现但 React 事件监听仍未挂载，
+// DispatchKeyEvent Enter 不触发发送，必须依赖 textarea 上的 __reactProps$ 属性
+// （React 挂载到 DOM 元素的确定性标志，事件监听就绪后才会出现）作为就绪信号。
 func (h *ChatHandler) waitForPageStable(timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	lastState := ""
@@ -1076,6 +1110,10 @@ func (h *ChatHandler) waitForPageStable(timeout time.Duration) bool {
 				if (r.width === 0 || r.height === 0) return 'hidden';
 				if (document.readyState !== 'complete') return 'loading';
 				if (!ta.placeholder) return 'no_ph';
+				// React 挂载后 textarea 上才有 __reactProps$xxx 属性；
+				// 只有 placeholder 不算就绪，键盘事件监听可能仍未绑定
+				const reactAttached = Object.keys(ta).some(k => k.startsWith('__reactProps') || k.startsWith('__reactEventHandlers'));
+				if (!reactAttached) return 'no_react';
 				return 'ready';
 			})()`, &state),
 		)

@@ -449,6 +449,9 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 	} else {
 		h.writeJSONResponse(w, resp)
 	}
+
+	// 请求成功后检查是否需要轮换账号（异步执行，不阻塞响应）
+	h.chatHandler.RotateIfNeeded()
 }
 
 // writeJSONResponse 构造并写入非流式 JSON 响应
