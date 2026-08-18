@@ -1532,21 +1532,10 @@ func (h *ChatHandler) ensureMessageSent() error {
 	log.Printf("[chat] ensureMessageSent: button at (%d,%d) cls=%q source=%s score=%d candidates=%d",
 		pos.X, pos.Y, pos.Cls, pos.Source, pos.Score, pos.CandidateCount)
 
-	// 第二步：用 chromedp.MouseClickXY 真实点击（React 按钮必须用此方式）
-	// 尝试两次：第一次可能因时序问题失败
-	for attempt := 1; attempt <= 2; attempt++ {
-		if h.tryMouseClickXY(pos.X, pos.Y) {
-			log.Printf("[chat] ensureMessageSent: mouse click succeeded (attempt %d)", attempt)
-			return nil
-		}
-		log.Printf("[chat] ensureMessageSent: mouse click attempt %d failed", attempt)
-		// 等待后重试
-		if attempt < 2 {
-			time.Sleep(500 * time.Millisecond)
-		}
-	}
-
-	// 第三步：回退到 JS 点击 + 完整事件序列（某些非 React 按钮可能生效）
+	// 第二步：先用 JS 合成事件点击（elementFromPoint + dispatchEvent 完整序列）。
+	// [Fix 2026-08-14] 切账号后 Chrome 真实输入管线失效（键盘 Enter、真实鼠标点击都无效，
+	// reload/navigate 也无法恢复），但 JS 合成事件始终有效（实测 31+ 次）。
+	// 所以 JS 合成点击提前到真实鼠标点击之前，避免真实点击的失败等待。
 	log.Println("[chat] ensureMessageSent: trying JS event sequence")
 	chromedp.Run(h.session.Context(),
 		chromedp.Evaluate(fmt.Sprintf(`(()=>{
@@ -1565,6 +1554,19 @@ func (h *ChatHandler) ensureMessageSent() error {
 	if !h.isTextareaStillFilled() {
 		log.Println("[chat] ensureMessageSent: JS event sequence succeeded")
 		return nil
+	}
+
+	// 第三步：JS 合成事件也失败时，回退到真实鼠标点击（MouseClickXY，旧主路径降级为兜底）
+	for attempt := 1; attempt <= 2; attempt++ {
+		if h.tryMouseClickXY(pos.X, pos.Y) {
+			log.Printf("[chat] ensureMessageSent: mouse click succeeded (attempt %d)", attempt)
+			return nil
+		}
+		log.Printf("[chat] ensureMessageSent: mouse click attempt %d failed", attempt)
+		// 等待后重试
+		if attempt < 2 {
+			time.Sleep(500 * time.Millisecond)
+		}
 	}
 
 	// 最终回退：键盘 Enter
