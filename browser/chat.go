@@ -20,19 +20,18 @@ import (
 )
 
 const (
-	clickDelay       = 300 * time.Millisecond
-	typeDelay        = 50 * time.Millisecond
-	enterDelay       = 200 * time.Millisecond
-	previewCheck     = 300 * time.Millisecond
+	clickDelay   = 300 * time.Millisecond
+	typeDelay    = 50 * time.Millisecond
+	enterDelay   = 200 * time.Millisecond
+	previewCheck = 300 * time.Millisecond
 	// 上传后等待发送按钮恢复可用的超时上限（CDP 实测：12.3MB 文件约 1.9s、6MB 图片约 1.1s）
 	sendBtnReadyTimeout = 15 * time.Second
 	// 页面重载后等待 React 完全就绪的超时上限（新对话/刷新后页面刚重建，直接输入会输到"半新页面"）
 	pageStableTimeout = 10 * time.Second
-	modeSwitchDelay  = 800 * time.Millisecond
-	newConvDelay     = 1500 * time.Millisecond
-	pollInterval     = 300 * time.Millisecond
-	maxTextChunk     = 3000
-	requestBodyLimit = 10 << 20
+	newConvDelay      = 1500 * time.Millisecond
+	pollInterval      = 300 * time.Millisecond
+	maxTextChunk      = 3000
+	requestBodyLimit  = 10 << 20
 
 	// 空闲保活：距离上次请求超过该时长时轻量唤醒页面（不重载），
 	// [Fix 2026-08-10] 30 分钟太久，Chrome Memory Saver 可能已在此之前卸载页面导致唤醒失败；
@@ -299,23 +298,18 @@ func (h *ChatHandler) SendTextChat(ctx context.Context, text string, shouldNewCo
 	if text == "" {
 		return nil, fmt.Errorf("empty text message")
 	}
-	return h.sendChat(ctx, "text", text, nil, nil, shouldNewConv)
+	return h.sendChat(ctx, text, nil, nil, shouldNewConv)
 }
 
 func (h *ChatHandler) SendImageChat(ctx context.Context, req *ChatRequest, shouldNewConv bool) (*ChatResponse, error) {
 	if len(req.Images) == 0 && len(req.Files) == 0 {
 		return nil, fmt.Errorf("no images or files provided")
 	}
-	// 模式选择：有图片走识图模式（需要 OCR），纯文件走快速模式（文本处理）
-	mode := "image"
-	if len(req.Images) == 0 && len(req.Files) > 0 {
-		mode = "text"
-		log.Printf("[chat] file-only request, using text mode (fast) instead of image mode")
-	}
-	return h.sendChat(ctx, mode, req.Text, req.Images, req.Files, shouldNewConv)
+	// 全新模型无需切换识图/快速模式，图片/文件直接上传即可
+	return h.sendChat(ctx, req.Text, req.Images, req.Files, shouldNewConv)
 }
 
-func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, images []string, files []string, shouldNewConv bool) (*ChatResponse, error) {
+func (h *ChatHandler) sendChat(ctx context.Context, text string, images []string, files []string, shouldNewConv bool) (*ChatResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -339,17 +333,12 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 	}
 	step("ensureReady")
 
-	if err := h.switchMode(ctx, mode); err != nil {
-		return nil, fmt.Errorf("switch to %s mode: %w", mode, err)
-	}
-	step("switchMode")
-
 	if err := h.injectInterceptor(); err != nil {
 		return nil, fmt.Errorf("inject interceptor: %w", err)
 	}
 	step("injectInterceptor")
 
-	if mode == "image" && len(images) > 0 {
+	if len(images) > 0 {
 		if err := h.uploadImageFromData(images[0]); err != nil {
 			return nil, fmt.Errorf("upload image: %w", err)
 		}
@@ -386,11 +375,11 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 		)
 		if strings.HasPrefix(uploadErr, "serverBusy:") {
 			log.Printf("[chat] server busy during file upload: %s", uploadErr)
-			return h.retryWithAccountSwitch(ctx, mode, text, images, files)
+			return h.retryWithAccountSwitch(ctx, text, images, files)
 		}
 		if strings.HasPrefix(uploadErr, "convLimit:") {
 			log.Printf("[chat] conv limit during file upload: %s", uploadErr)
-			return h.retryWithNewConversation(ctx, mode, text, images, files)
+			return h.retryWithNewConversation(ctx, text, images, files)
 		}
 
 		// 输入提示文字并发送
@@ -413,12 +402,12 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 			if errType == "serverBusy" {
 				logDiagInfo(h, errType, errMsg)
 				log.Printf("[chat] detected %s after file upload: %s", errType, errMsg)
-				return h.retryWithAccountSwitch(ctx, mode, text, images, files)
+				return h.retryWithAccountSwitch(ctx, text, images, files)
 			}
 			if errType == "convLimit" {
 				logDiagInfo(h, errType, errMsg)
 				log.Printf("[chat] detected %s after file upload: %s", errType, errMsg)
-				return h.retryWithNewConversation(ctx, mode, text, images, files)
+				return h.retryWithNewConversation(ctx, text, images, files)
 			}
 			// 兜底点击发送（可能页面只是卡顿，没有错误提示）
 			if err := h.ensureMessageSent(); err != nil {
@@ -437,9 +426,6 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 			if err := h.injectInterceptor(); err != nil {
 				return nil, fmt.Errorf("inject interceptor after navigate home: %w", err)
 			}
-			if err2 := h.switchMode(ctx, mode); err2 != nil {
-				return nil, fmt.Errorf("send message: %w", err)
-			}
 			if err2 := h.sendMessage(text); err2 != nil {
 				return nil, fmt.Errorf("send message: %w", err2)
 			}
@@ -452,9 +438,9 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 		logDiagInfo(h, errType, errMsg)
 		log.Printf("[chat] detected %s immediately after send: %s", errType, errMsg)
 		if errType == "serverBusy" {
-			return h.retryWithAccountSwitch(ctx, mode, text, images, files)
+			return h.retryWithAccountSwitch(ctx, text, images, files)
 		}
-		return h.retryWithNewConversation(ctx, mode, text, images, files)
+		return h.retryWithNewConversation(ctx, text, images, files)
 	}
 	step("immediateErrorDetection")
 
@@ -467,13 +453,13 @@ func (h *ChatHandler) sendChat(ctx context.Context, mode string, text string, im
 	// 检测服务器繁忙/消息过于频繁，切换账号并重试（优先级高于对话长度上限）
 	if serverBusy || hasServerBusy(content) {
 		log.Println("[chat] server busy detected, switching account and retrying...")
-		return h.retryWithAccountSwitch(ctx, mode, text, images, files)
+		return h.retryWithAccountSwitch(ctx, text, images, files)
 	}
 
 	// 检测对话长度上限，自动开启新对话并重试
 	if convLimit || hasConvLimit(content) {
 		log.Println("[chat] conversation limit detected, starting new conversation and retrying...")
-		return h.retryWithNewConversation(ctx, mode, text, images, files)
+		return h.retryWithNewConversation(ctx, text, images, files)
 	}
 
 	// 拦截器内容为空时，尝试复制按钮兜底
@@ -688,243 +674,6 @@ const getDirectText = `(el) => {
 	}
 	return txt.trim();
 }`
-
-// getCurrentModeFromRadio 获取当前选中 radio 的文本，先尝试直接文本节点，回退到 textContent 并去重
-// 增强：增加 toggle button / button group / aria-pressed 选择器回退
-// 注意：要排除"深度思考"和"智能搜索"toggle，它们不是文本/识图模式切换
-const getCurrentModeJS = `(()=>{
-	// 模式关键词（用于识别文本/识图模式切换控件）
-	const modeKeywords = ['识图', '默认', '快速'];
-	// 排除关键词（这些是 toggle，不是模式切换）
-	const excludeKeywords = ['深度思考', '智能搜索', '联网搜索'];
-
-	function isModeControl(text) {
-		if (!text) return false;
-		for (const ex of excludeKeywords) {
-			if (text.indexOf(ex) !== -1) return false;
-		}
-		for (const kw of modeKeywords) {
-			if (text.indexOf(kw) !== -1) return true;
-		}
-		return false;
-	}
-
-	function getDirectText(el) {
-		let txt = '';
-		for (const n of el.childNodes) {
-			if (n.nodeType === 3) txt += n.textContent;
-		}
-		return txt.trim();
-	}
-
-	function normalizeModeText(txt) {
-		if (!txt) return '';
-		return txt.replace(/(识图模式)+/g, '识图模式').replace(/(默认模式)+/g, '默认模式').replace(/(快速模式)+/g, '快速模式');
-	}
-
-	// 1. 优先查 [role="radiogroup"] [role="radio"]
-	let radios = document.querySelectorAll('[role="radiogroup"] [role="radio"]');
-	if (radios.length === 0) {
-		radios = document.querySelectorAll('[role="radio"]');
-	}
-	for (const r of radios) {
-		if (r.getAttribute('aria-checked') === 'true') {
-			let txt = getDirectText(r) || normalizeModeText((r.textContent || '').trim());
-			if (isModeControl(txt)) return txt;
-		}
-	}
-
-	// 2. 回退：查找 button / div.ds-toggle-button / [aria-pressed] 中含模式关键词的元素
-	const toggleCandidates = document.querySelectorAll(
-		'button, [role="button"], div.ds-toggle-button, [aria-pressed], [class*="mode"], [data-mode]'
-	);
-	for (const el of toggleCandidates) {
-		let txt = getDirectText(el) || (el.textContent || '').trim();
-		if (!isModeControl(txt)) continue;
-		// 检查是否"选中"：aria-checked, aria-pressed, class 含 selected/active
-		const isSelected =
-			el.getAttribute('aria-checked') === 'true' ||
-			el.getAttribute('aria-pressed') === 'true' ||
-			el.getAttribute('data-state') === 'active' ||
-			(el.className || '').includes('--selected') ||
-			(el.className || '').includes('--active') ||
-			(el.className || '').includes('active');
-		if (isSelected) {
-			return normalizeModeText(txt);
-		}
-	}
-
-	// 3. 回退：检查是否有实际已上传的图片预览（对话进行中 radio 可能被隐藏）
-	// 注意：input[type="file"] 在所有模式中都存在（附件按钮），不能作为识图模式的依据
-	const previewImgs = document.querySelectorAll('img[src*="blob:"], img[src*="data:"]');
-	if (previewImgs.length > 0) {
-		return '识图模式';
-	}
-	return '';
-})()`
-
-func (h *ChatHandler) switchToTextMode(ctx context.Context) error {
-	var currentMode string
-	if err := chromedp.Run(h.session.Context(),
-		chromedp.Evaluate(getCurrentModeJS, &currentMode),
-	); err != nil {
-		log.Printf("[chat] detect text mode error: %v", err)
-	}
-	log.Printf("[chat] current mode: %q", currentMode)
-	if currentMode == "" || !strings.Contains(currentMode, "识图") {
-		log.Println("[chat] already in text mode")
-		return nil
-	}
-	log.Printf("[chat] switching from %q to text mode", currentMode)
-	var clickResult string
-	err := chromedp.Run(h.session.Context(),
-		chromedp.Evaluate(`(()=>{
-			// 先找 radiogroup 内的 radio
-			let radios = document.querySelectorAll('[role="radiogroup"] [role="radio"]');
-			if (radios.length === 0) {
-				radios = document.querySelectorAll('[role="radio"]');
-			}
-			for (const r of radios) {
-				let txt = '';
-				for (const n of r.childNodes) {
-					if (n.nodeType === 3) txt += n.textContent;
-				}
-				txt = txt.trim();
-				if (!txt) txt = (r.textContent || '').trim();
-				// 跳过任何包含 识图 的选项
-				if (!txt.includes('识图')) {
-					r.click();
-					return 'clicked:' + txt;
-				}
-			}
-			// 没找到非识图选项，尝试查找包含 '识图' 的并取消选中
-			for (const r of radios) {
-				let txt = '';
-				for (const n of r.childNodes) {
-					if (n.nodeType === 3) txt += n.textContent;
-				}
-				txt = txt.trim();
-				if (!txt) txt = (r.textContent || '').trim();
-				if (txt.includes('识图') && r.getAttribute('aria-checked') === 'true') {
-					// 试图取消选中 - 点击当前选中的识图模式
-					// 某些 UI 点击已选中的 radio 会取消
-					r.click();
-					return 'attempt_uncheck:' + txt;
-				}
-			}
-			return 'not_found:' + radios.length + ' radios';
-		})()`, &clickResult),
-		chromedp.Sleep(clickDelay),
-	)
-	log.Printf("[chat] switch to text mode result: %s (err=%v)", clickResult, err)
-	if err != nil {
-		return fmt.Errorf("click text mode radio: %w", err)
-	}
-	if strings.Contains(clickResult, "not_found") {
-		h.session.NavigateHome(ctx)
-		time.Sleep(1 * time.Second)
-	}
-	log.Println("[chat] switched to text mode")
-	return nil
-}
-
-func (h *ChatHandler) switchToImageMode(ctx context.Context) error {
-	return h.switchToImageModeDepth(ctx, 0)
-}
-
-func (h *ChatHandler) switchToImageModeDepth(ctx context.Context, depth int) error {
-	var currentMode string
-	if err := chromedp.Run(h.session.Context(),
-		chromedp.Evaluate(getCurrentModeJS, &currentMode),
-	); err != nil {
-		log.Printf("[chat] detect image mode error: %v", err)
-	}
-
-	log.Printf("[chat] current mode: %q", currentMode)
-
-	if strings.Contains(currentMode, "识图") {
-		log.Println("[chat] already in image mode")
-		return nil
-	}
-
-	log.Printf("[chat] switching from %q to image mode", currentMode)
-
-	var clickResult string
-	err := chromedp.Run(h.session.Context(),
-		chromedp.Evaluate(`(()=>{
-			// 先找 radiogroup 内的 radio
-			let radios = document.querySelectorAll('[role="radiogroup"] [role="radio"]');
-			if (radios.length === 0) {
-				radios = document.querySelectorAll('[role="radio"]');
-			}
-			// 获取元素的直接文本（排除子元素嵌套文本）
-			function getDirectText(el) {
-				let txt = '';
-				for (const n of el.childNodes) {
-					if (n.nodeType === 3) txt += n.textContent;
-				}
-				return txt.trim();
-			}
-			for (const r of radios) {
-				let txt = getDirectText(r);
-				if (!txt) txt = (r.textContent || '').trim().replace(/(识图模式)+/g, '识图模式').replace(/(默认模式)+/g, '默认模式');
-				if (txt === '识图模式') {
-					r.click();
-					return 'clicked';
-				}
-			}
-			for (const r of radios) {
-				let txt = getDirectText(r);
-				if (!txt) txt = (r.textContent || '').trim().replace(/(识图模式)+/g, '识图模式').replace(/(默认模式)+/g, '默认模式');
-				if (txt.includes('识图')) {
-					r.click();
-					return 'clicked_partial:' + txt;
-				}
-			}
-			return 'not_found:' + radios.length + ' radios';
-		})()`, &clickResult),
-		chromedp.Sleep(modeSwitchDelay),
-	)
-
-	log.Printf("[chat] click result: %s (err=%v)", clickResult, err)
-
-	if err != nil {
-		return fmt.Errorf("click image mode radio: %w", err)
-	}
-
-	if strings.Contains(clickResult, "not_found") {
-		if depth >= 2 {
-			return fmt.Errorf("image mode radios not found after %d navigation attempts", depth)
-		}
-		log.Println("[chat] mode radios not found, navigating home first")
-		h.session.NavigateHome(ctx)
-		time.Sleep(3 * time.Second)
-		return h.switchToImageModeDepth(ctx, depth+1)
-	}
-
-	if err := chromedp.Run(h.session.Context(),
-		chromedp.Evaluate(getCurrentModeJS, &currentMode),
-	); err != nil {
-		log.Printf("[chat] detect image mode error: %v", err)
-	}
-
-	log.Printf("[chat] after click, mode: %q", currentMode)
-
-	if !strings.Contains(currentMode, "识图") {
-		// 尝试额外等一秒再检查
-		time.Sleep(1 * time.Second)
-		chromedp.Run(h.session.Context(),
-			chromedp.Evaluate(getCurrentModeJS, &currentMode),
-		)
-		log.Printf("[chat] after extra wait, mode: %q", currentMode)
-		if !strings.Contains(currentMode, "识图") {
-			return fmt.Errorf("failed to switch to image mode, current=%q", currentMode)
-		}
-	}
-
-	log.Println("[chat] switched to image mode")
-	return nil
-}
 
 func (h *ChatHandler) saveBase64Image(dataURL string) (string, error) {
 	parts := strings.SplitN(dataURL, ",", 2)
@@ -2169,14 +1918,6 @@ func (h *ChatHandler) waitForEmptyTextarea(timeout time.Duration) bool {
 
 // ---- 辅助方法 ----
 
-// switchMode 切换到指定模式
-func (h *ChatHandler) switchMode(ctx context.Context, mode string) error {
-	if mode == "text" {
-		return h.switchToTextMode(ctx)
-	}
-	return h.switchToImageMode(ctx)
-}
-
 // uploadImageFromData 保存base64图片并上传，上传后立即清理临时文件
 func (h *ChatHandler) uploadImageFromData(imageData string) error {
 	filePath, err := h.saveBase64Image(imageData)
@@ -2192,15 +1933,12 @@ func (h *ChatHandler) uploadImageFromData(imageData string) error {
 	return nil
 }
 
-// prepareForRetry 重试前的准备工作：注入拦截器、切换模式、上传图片
-func (h *ChatHandler) prepareForRetry(ctx context.Context, mode string, images []string) error {
+// prepareForRetry 重试前的准备工作：注入拦截器、上传图片
+func (h *ChatHandler) prepareForRetry(ctx context.Context, images []string) error {
 	if err := h.injectInterceptor(); err != nil {
 		return fmt.Errorf("inject interceptor: %w", err)
 	}
-	if err := h.switchMode(ctx, mode); err != nil {
-		return fmt.Errorf("switch mode: %w", err)
-	}
-	if mode == "image" && len(images) > 0 {
+	if len(images) > 0 {
 		if err := h.uploadImageFromData(images[0]); err != nil {
 			return fmt.Errorf("upload image: %w", err)
 		}
@@ -2340,7 +2078,7 @@ func (h *ChatHandler) fetchContentViaCopyButton() (string, error) {
 }
 
 // retryWithAccountSwitch 切换账号后重新发送消息（支持多账号轮询）
-func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, text string, images []string, files []string) (*ChatResponse, error) {
+func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, text string, images []string, files []string) (*ChatResponse, error) {
 	// 客户端已取消请求，不重试，让客户端自己决定是否重试
 	if ctx.Err() != nil {
 		log.Printf("[chat] retryWithAccountSwitch: client canceled, skipping retry")
@@ -2354,8 +2092,8 @@ func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, t
 	}
 	accountCount := h.session.AvailableAccountCount()
 	totalAccounts := h.session.AccountCount()
-	log.Printf("[chat] starting account switch retry, available accounts: %d/%d, mode=%q, text_len=%d, images=%d, files=%d",
-		accountCount, totalAccounts, mode, len([]rune(text)), len(images), len(files))
+	log.Printf("[chat] starting account switch retry, available accounts: %d/%d, text_len=%d, images=%d, files=%d",
+		accountCount, totalAccounts, len([]rune(text)), len(images), len(files))
 
 	// 只尝试其他可用账号（accountCount-1 次），不重复登录当前账号
 	// 如果可用账号少于2个，则直接返回错误
@@ -2394,8 +2132,8 @@ func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, t
 		}
 		log.Printf("[chat] attempt %d/%d: switched to account: %s", attempt+1, accountCount-1, newEmail)
 
-		log.Printf("[chat] attempt %d: preparing for retry (mode=%q, images=%d)", attempt+1, mode, len(images))
-		if err := h.prepareForRetry(ctx, mode, images); err != nil {
+		log.Printf("[chat] attempt %d: preparing for retry (images=%d)", attempt+1, len(images))
+		if err := h.prepareForRetry(ctx, images); err != nil {
 			log.Printf("[chat] attempt %d prepareForRetry failed: %v", attempt+1, err)
 			return &ChatResponse{Content: "切换账号后准备失败"}, err
 		}
@@ -2419,7 +2157,7 @@ func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, t
 		if errType == "convLimit" {
 			logDiagInfo(h, errType, errMsg)
 			log.Printf("[chat] attempt %d hit convLimit, will retry with new conversation", attempt+1)
-			return h.retryWithNewConversation(ctx, mode, text, images, files)
+			return h.retryWithNewConversation(ctx, text, images, files)
 		}
 		if errType != "" {
 			logDiagInfo(h, errType, errMsg)
@@ -2472,7 +2210,7 @@ func (h *ChatHandler) retryWithAccountSwitch(ctx context.Context, mode string, t
 }
 
 // retryWithNewConversation 开启新对话后重新发送消息
-func (h *ChatHandler) retryWithNewConversation(ctx context.Context, mode string, text string, images []string, files []string) (*ChatResponse, error) {
+func (h *ChatHandler) retryWithNewConversation(ctx context.Context, text string, images []string, files []string) (*ChatResponse, error) {
 	// 客户端已取消请求，不重试，让客户端自己决定是否重试
 	if ctx.Err() != nil {
 		log.Printf("[chat] retryWithNewConversation: client canceled, skipping retry")
@@ -2485,7 +2223,7 @@ func (h *ChatHandler) retryWithNewConversation(ctx context.Context, mode string,
 		// 改为返回明确错误，让客户端知道开新对话失败的真实原因。
 		return nil, fmt.Errorf("开新对话失败: %w", err)
 	}
-	if err := h.prepareForRetry(ctx, mode, images); err != nil {
+	if err := h.prepareForRetry(ctx, images); err != nil {
 		return &ChatResponse{Content: "新开对话后准备失败"}, err
 	}
 	if err := h.sendMessageOrUpload(text, files); err != nil {
@@ -2498,7 +2236,7 @@ func (h *ChatHandler) retryWithNewConversation(ctx context.Context, mode string,
 	// 新对话后仍然繁忙，切换账号重试
 	if serverBusy || hasServerBusy(content) {
 		log.Printf("[chat] new conversation still serverBusy, switching account")
-		return h.retryWithAccountSwitch(ctx, mode, text, images, files)
+		return h.retryWithAccountSwitch(ctx, text, images, files)
 	}
 	// 新对话后仍然命中上限：切换账号重试（用户要求：拦截到大量系统提示应"新开对话或切换账号后重试"）
 	if convLimit || hasConvLimit(content) {
